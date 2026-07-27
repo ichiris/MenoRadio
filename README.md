@@ -1,4 +1,8 @@
 # MenoRadio
+
+MenoRadio 是一款非官方网易云音乐客户端，界面播放页设计参考了 LyricEase，基于 Electron 框架开发。
+支持扫码登录、账号密码登录、Cookie 登录。拥有与 LyricEase 相近的播放页使用体验。
+
 MenoRadio is an unofficial NetEase Cloud Music player. It borrows the playback page design from LyricEase and is built with Electron.
 Supports QR code login, account & password login, and Cookie login
 Delivers a playback experience similar to LyricEase
