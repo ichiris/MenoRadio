@@ -1,0 +1,66 @@
+{
+  "name": "menoradio",
+  "version": "0.11.1-preview",
+  "description": "A calm, Fluent-inspired NetEase Cloud Music desktop player.",
+  "main": "electron/main.cjs",
+  "author": "ichiris",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "screenshot": "electron . --screenshot=menoradio-home.png",
+    "screenshot:login": "electron . --preview=login --screenshot=menoradio-login.png",
+    "screenshot:search": "electron . --size=1600x1000 --preview=search --screenshot=menoradio-search-v1.png",
+    "screenshot:player": "electron . --preview=player --screenshot=menoradio-player.png",
+    "screenshot:player:wide": "electron . --size=1600x1000 --preview=player --screenshot=menoradio-player-wide-v2.png",
+    "screenshot:player:compact": "electron . --size=980x700 --preview=player --screenshot=menoradio-player-compact-v2.png",
+    "screenshot:player:queue": "electron . --size=1600x1000 --preview=player-queue --screenshot=menoradio-player-queue-v1.png",
+    "screenshot:player:radio": "electron . --size=1600x1000 --preview=player-radio --screenshot=menoradio-player-radio-v1.png",
+    "screenshot:user": "electron . --size=1440x900 --preview=user --screenshot=menoradio-user-v1.png",
+    "icon": "electron electron/icon-export.cjs",
+    "check": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/floating-preload.cjs && node --check electron/icon-export.cjs && node --check src/app.js && node --check src/floating-lyrics.js",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win nsis portable"
+  },
+  "dependencies": {
+    "@neteasecloudmusicapienhanced/api": "^4.37.0",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "electron": "^37.2.4",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "io.menoradio.desktop",
+    "productName": "MenoRadio",
+    "asar": true,
+    "files": [
+      "electron/**/*",
+      "src/**/*",
+      "package.json",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "artifactName": "MenoRadio-Setup-${version}-${arch}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "MenoRadio"
+    },
+    "portable": {
+      "artifactName": "MenoRadio-Portable-${version}-${arch}.${ext}"
+    }
+  }
+}

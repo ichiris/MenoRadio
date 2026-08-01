@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MenoRadio 悬浮歌词</title>
+  <link rel="stylesheet" href="./floating-lyrics.css">
+</head>
+<body>
+  <main id="surface" class="surface locked" aria-live="polite">
+    <div class="lyric-stack">
+      <div id="primaryViewport" class="line-viewport primary-viewport"><div id="primary" class="line primary"></div></div>
+      <div id="translationViewport" class="line-viewport translation-viewport"><div id="translation" class="line translation"></div></div>
+    </div>
+    <div class="resize-handle resize-n" data-resize="n"></div>
+    <div class="resize-handle resize-ne" data-resize="ne"></div>
+    <div class="resize-handle resize-e" data-resize="e"></div>
+    <div class="resize-handle resize-se" data-resize="se"></div>
+    <div class="resize-handle resize-s" data-resize="s"></div>
+    <div class="resize-handle resize-sw" data-resize="sw"></div>
+    <div class="resize-handle resize-w" data-resize="w"></div>
+    <div class="resize-handle resize-nw" data-resize="nw"></div>
+    <div id="contextMenu" class="floating-context-menu" hidden>
+      <button id="lockAction" type="button">锁定</button>
+    </div>
+  </main>
+  <script src="./floating-lyrics.js"></script>
+</body>
+</html>

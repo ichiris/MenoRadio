@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' blob: https:; connect-src 'self' https:; font-src 'self' data:;">
+  <title>MenoRadio</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="initializingScreen" class="initializing-screen" role="status" aria-label="正在初始化 MenoRadio">
+    <img src="assets/logo.svg" alt="" class="initializing-logo">
+    <div class="initializing-indicator" aria-hidden="true"><span></span></div>
+    <strong>正在初始化</strong>
+  </div>
+  <svg class="svg-sprite" aria-hidden="true">
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+    <symbol id="i-forward" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11.5L12 4l9 7.5v8a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="M16 16l5 5"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 2l1.9 6.1L20 10l-6.1 1.9L12 18l-1.9-6.1L4 10l6.1-1.9z"/><path d="M19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/></symbol>
+    <symbol id="i-radio" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="14" rx="3"/><path d="M7 3l11 3M7 11h6M7 15h4"/><circle cx="17" cy="14" r="2"/></symbol>
+    <symbol id="i-heart" viewBox="0 0 24 24"><path d="M20.8 5.7a5.4 5.4 0 0 0-7.7 0L12 6.8l-1.1-1.1a5.4 5.4 0 1 0-7.7 7.7L12 22l8.8-8.6a5.4 5.4 0 0 0 0-7.7z"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 19h11a4 4 0 0 0 .6-8A7 7 0 0 0 5.2 9.5 4.8 4.8 0 0 0 7 19z"/><path d="M12 10v6m-3-3l3 3 3-3"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h12M9 12h12M9 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1z"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path class="fill" d="M7.5 4.8c0-1.1 1.2-1.8 2.1-1.2l10.1 7.1a1.6 1.6 0 0 1 0 2.6L9.6 20.4c-.9.6-2.1 0-2.1-1.2z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path class="fill" d="M6 5.5A1.5 1.5 0 0 1 7.5 4h2A1.5 1.5 0 0 1 11 5.5v13A1.5 1.5 0 0 1 9.5 20h-2A1.5 1.5 0 0 1 6 18.5zm7 0A1.5 1.5 0 0 1 14.5 4h2A1.5 1.5 0 0 1 18 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-2a1.5 1.5 0 0 1-1.5-1.5z"/></symbol>
+    <symbol id="i-prev" viewBox="0 0 24 24"><path class="fill" d="M5 5h2v14H5zm3.5 7.8a1 1 0 0 1 0-1.6l9-6.4A1 1 0 0 1 19 5.6v12.8a1 1 0 0 1-1.5.8z"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24"><path class="fill" d="M17 5h2v14h-2zm-2.5 7.8a1 1 0 0 0 0-1.6l-9-6.4A1 1 0 0 0 4 5.6v12.8a1 1 0 0 0 1.5.8z"/></symbol>
+    <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M4 7h2.5c4.8 0 6.2 10 11 10H20m-3-3 3 3-3 3M4 17h2.5c1.7 0 3-1.3 4.1-3M14 8.5c1-1 2-1.5 3.5-1.5H20m-3-3 3 3-3 3"/></symbol>
+    <symbol id="i-repeat" viewBox="0 0 24 24"><path d="M17 3l3 3-3 3M4 11V9a3 3 0 0 1 3-3h13M7 21l-3-3 3-3m13-2v2a3 3 0 0 1-3 3H4"/></symbol>
+    <symbol id="i-repeat-one" viewBox="0 0 24 24"><path d="M17 3l3 3-3 3M4 11V9a3 3 0 0 1 3-3h13M7 21l-3-3 3-3m13-2v2a3 3 0 0 1-3 3H4"/><path d="M11 10h2v5m-2 0h4"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24"><path class="fill" d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16 9a4 4 0 0 1 0 6m2.5-8.5a8 8 0 0 1 0 11"/></symbol>
+    <symbol id="i-volume-muted" viewBox="0 0 24 24"><path class="fill" d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9l4 6m0-6-4 6"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle class="fill" cx="5" cy="12" r="1.7"/><circle class="fill" cx="12" cy="12" r="1.7"/><circle class="fill" cx="19" cy="12" r="1.7"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4M4 20l4-1"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></symbol>
+    <symbol id="i-queue" viewBox="0 0 24 24"><path d="M4 6h13M4 11h13M4 16h8"/><path d="M17 14v6l4-3z"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+    <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4m8-4v4M3 10h18"/></symbol>
+    <symbol id="i-window" viewBox="0 0 24 24"><rect x="5.5" y="5.5" width="13" height="13" rx="1"/></symbol>
+    <symbol id="i-restore" viewBox="0 0 24 24"><path d="M9 8V6.5A1.5 1.5 0 0 1 10.5 5h7A1.5 1.5 0 0 1 19 6.5v7A1.5 1.5 0 0 1 17.5 15H16"/><rect x="5" y="8" width="11" height="11" rx="1.3"/></symbol>
+    <symbol id="i-fullscreen" viewBox="0 0 24 24"><path d="M8 4H4v4m12-4h4v4M8 20H4v-4m12 4h4v-4"/></symbol>
+    <symbol id="i-fullscreen-exit" viewBox="0 0 24 24"><path d="M4 4l6 6m0-5v5H5m15-6-6 6m5 0h-5V5M4 20l6-6m-5 0h5v5m10 1-6-6m0 5v-5h5"/></symbol>
+    <symbol id="i-lyrics" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9h7m-7 4h10m-10 4h6"/></symbol>
+  </svg>
+
+  <div id="app">
+    <header class="titlebar">
+      <div class="titlebar-drag">
+        <img src="assets/logo.svg" alt="" class="titlebar-logo">
+        <span class="titlebar-name">MenoRadio</span>
+      </div>
+      <div class="window-controls">
+        <button id="minimizeButton" class="window-button" aria-label="最小化"><span></span></button>
+        <button id="maximizeButton" class="window-button maximize" aria-label="最大化"><svg><use href="#i-window"/></svg></button>
+        <button id="closeButton" class="window-button close" aria-label="关闭"><svg><use href="#i-close"/></svg></button>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <aside class="sidebar">
+        <div class="sidebar-scroll">
+          <nav class="nav-group" aria-label="发现">
+            <p class="nav-heading">发现</p>
+            <button class="nav-item active" data-route="home"><svg><use href="#i-home"/></svg><span>主页</span></button>
+            <button class="nav-item" data-route="search"><svg><use href="#i-search"/></svg><span>搜索</span></button>
+            <button class="nav-item" data-route="daily"><svg><use href="#i-spark"/></svg><span>每日推荐</span></button>
+            <button class="nav-item" data-route="radio"><svg><use href="#i-radio"/></svg><span>私人漫游</span></button>
+          </nav>
+
+          <nav class="nav-group" aria-label="我的音乐">
+            <p class="nav-heading">我的音乐</p>
+            <button class="nav-item" data-route="liked" data-playlist-drop-liked><svg><use href="#i-heart"/></svg><span>我喜欢的音乐</span></button>
+            <button class="nav-item" data-route="recent"><svg><use href="#i-clock"/></svg><span>最近播放</span></button>
+          </nav>
+
+          <nav class="nav-group playlist-nav" aria-label="我的歌单">
+            <div id="playlistNav"><div class="nav-placeholder"><span></span><span></span><span></span></div></div>
+          </nav>
+        </div>
+
+        <div class="sidebar-footer">
+          <button id="profileButton" class="profile-button interactive">
+            <span id="profileAvatar" class="avatar"><svg><use href="#i-user"/></svg></span>
+            <span class="profile-copy"><strong id="profileName">登录网易云音乐</strong><small id="profileHint">同步歌单与每日推荐</small></span>
+          </button>
+          <button class="icon-button" data-route="settings" aria-label="设置"><svg><use href="#i-settings"/></svg></button>
+        </div>
+      </aside>
+
+      <main class="main-area">
+        <header class="content-toolbar">
+          <div class="history-controls">
+            <button id="backButton" class="round-button" disabled aria-label="后退"><svg><use href="#i-back"/></svg></button>
+            <button id="forwardButton" class="round-button" disabled aria-label="前进"><svg><use href="#i-forward"/></svg></button>
+          </div>
+          <div class="toolbar-actions" aria-hidden="true"></div>
+        </header>
+
+        <section id="page" class="page" aria-live="polite"></section>
+      </main>
+    </div>
+
+    <footer id="playerBar" class="player-bar empty">
+      <div class="player-progress"><input id="playerProgress" type="range" min="0" max="1000" value="0" aria-label="播放进度"></div>
+      <button id="nowPlayingInfo" class="now-playing-info" aria-label="打开播放页">
+        <span id="nowCover" class="now-cover placeholder">M</span>
+        <span class="now-copy"><strong id="nowTitle">还没有播放音乐</strong><small id="nowArtist">从一首喜欢的歌开始</small></span>
+      </button>
+      <div class="transport">
+        <button id="likeButton" class="player-icon" aria-label="喜欢"><svg><use href="#i-heart"/></svg></button>
+        <button id="previousButton" class="player-icon" aria-label="上一首"><svg><use href="#i-prev"/></svg></button>
+        <button id="playButton" class="play-button" aria-label="播放"><svg><use href="#i-play"/></svg></button>
+        <button id="nextButton" class="player-icon" aria-label="下一首"><svg><use href="#i-next"/></svg></button>
+        <button id="playModeButton" class="player-icon active" aria-label="列表循环" title="列表循环"><svg><use href="#i-repeat"/></svg></button>
+      </div>
+      <div class="player-tools">
+        <span id="timeLabel" class="time-label">0:00 / 0:00</span>
+        <button id="volumeButton" class="player-icon" aria-label="音量"><svg><use href="#i-volume"/></svg></button>
+        <input id="volumeRange" class="volume-range" type="range" min="0" max="1" step="0.01" value="0.75" aria-label="音量">
+        <button id="queueButton" class="player-icon" aria-label="播放队列"><svg><use href="#i-queue"/></svg></button>
+      </div>
+    </footer>
+  </div>
+
+  <section id="immersivePlayer" class="immersive-player paused" aria-hidden="true" data-lyric-scale="auto">
+    <div id="immersiveBackdrop" class="immersive-backdrop active"></div>
+    <div id="immersiveBackdropNext" class="immersive-backdrop"></div>
+    <header class="immersive-header">
+      <button id="closeImmersive" class="immersive-dismiss" aria-label="返回播放列表"><svg><use href="#i-chevron"/></svg></button>
+      <div class="immersive-window-controls" aria-label="窗口控制">
+        <button id="immersiveMinimize" class="window-button" aria-label="最小化"><span></span></button>
+        <button id="immersiveMaximize" class="window-button maximize" aria-label="最大化"><svg><use href="#i-window"/></svg></button>
+        <button id="immersiveClose" class="window-button close" aria-label="关闭"><svg><use href="#i-close"/></svg></button>
+      </div>
+    </header>
+    <div class="immersive-content">
+      <section class="album-panel">
+        <img id="immersiveCover" class="immersive-cover" alt="专辑封面" draggable="false">
+        <div class="immersive-meta"><div><h1 id="immersiveTitle">MenoRadio</h1><p id="immersiveArtist">静候第一首歌</p></div><button id="immersiveLike" class="glass-button"><svg><use href="#i-heart"/></svg></button></div>
+        <input id="immersiveProgress" class="immersive-progress" type="range" min="0" max="1000" value="0" aria-label="播放进度">
+        <div class="immersive-times"><span id="immersiveCurrent">0:00</span><span id="immersiveDuration">0:00</span></div>
+        <div class="immersive-controls">
+          <button id="immersiveModeButton" class="glass-button" data-player-action="mode" aria-label="列表循环" title="列表循环"><svg><use href="#i-repeat"/></svg></button>
+          <button id="immersivePrevious" class="glass-button" data-player-action="previous"><svg><use href="#i-prev"/></svg></button>
+          <button id="immersivePlay" class="immersive-play-button" data-player-action="play"><svg><use href="#i-play"/></svg></button>
+          <button class="glass-button" data-player-action="next"><svg><use href="#i-next"/></svg></button>
+          <div class="immersive-volume-control">
+            <button id="immersiveVolume" class="glass-button" aria-label="调节音量" aria-expanded="false"><svg><use href="#i-volume"/></svg></button>
+            <div id="immersiveVolumePopover" class="immersive-volume-popover" aria-hidden="true">
+              <button id="immersiveMuteToggle" class="glass-button" aria-label="静音"><svg><use href="#i-volume"/></svg></button>
+              <input id="immersiveVolumeRange" type="range" min="0" max="1" step="0.01" value="0.75" aria-label="音量">
+              <span id="immersiveVolumeValue">75%</span>
+            </div>
+          </div>
+        </div>
+        <div class="immersive-view-controls" aria-label="播放页视图">
+          <button id="immersiveLyricsView" class="glass-button active" aria-label="歌词" title="歌词"><svg><use href="#i-lyrics"/></svg></button>
+          <button id="immersiveFullScreen" class="glass-button" aria-label="全屏" title="全屏"><svg><use href="#i-fullscreen"/></svg></button>
+          <button id="immersiveQueueView" class="glass-button" aria-label="播放队列" title="播放队列"><svg><use href="#i-queue"/></svg></button>
+        </div>
+      </section>
+      <section class="lyrics-panel">
+        <div id="immersiveQueuePanel" class="immersive-queue-panel" aria-hidden="true">
+          <header><div><h2>接下来播放</h2><p id="immersiveQueueSummary">0 首歌曲</p></div><button id="immersiveClearQueue" class="queue-clear-button" type="button">清空</button></header>
+          <div id="immersiveQueueList" class="immersive-queue-list"></div>
+        </div>
+        <div id="lyricsScroller" class="lyrics-scroller"><div class="lyric-empty"><strong>歌词将在这里出现</strong><span>播放一首音乐，沉浸其中</span></div></div>
+        <div class="lyric-options">
+          <button id="translationToggle" class="option-pill active" title="显示翻译" aria-label="显示翻译">aあ</button>
+          <div class="font-size-control">
+            <button id="fontSizeToggle" class="option-pill" title="歌词大小" aria-label="调整歌词大小">Aa</button>
+            <div id="fontSizeMenu" class="font-size-menu" aria-hidden="true">
+              <label>歌词字体尺寸</label>
+              <div class="choice-picker-list" role="listbox" aria-label="歌词字体尺寸">
+                <button type="button" class="choice-option" data-lyric-scale-value="auto" role="option"><span>自适应（默认）</span></button>
+                <button type="button" class="choice-option" data-lyric-scale-value="60" role="option"><span>60%</span></button>
+                <button type="button" class="choice-option" data-lyric-scale-value="80" role="option"><span>80%</span></button>
+                <button type="button" class="choice-option" data-lyric-scale-value="100" role="option"><span>100%</span></button>
+                <button type="button" class="choice-option" data-lyric-scale-value="120" role="option"><span>120%</span></button>
+                <button type="button" class="choice-option" data-lyric-scale-value="150" role="option"><span>150%</span></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <aside id="queueDrawer" class="queue-drawer" aria-hidden="true">
+    <header><div><h2>播放队列</h2><p id="queueSummary">0 首歌曲</p></div><div class="queue-header-actions"><button id="clearQueue" class="queue-clear-button" type="button">清空</button><button id="closeQueue" class="icon-button"><svg><use href="#i-close"/></svg></button></div></header>
+    <div id="queueList" class="queue-list"></div>
+  </aside>
+
+  <div id="trackMenu" class="track-menu" aria-hidden="true"></div>
+  <div id="modalLayer" class="modal-layer" aria-hidden="true"></div>
+  <div id="toastLayer" class="toast-layer" aria-live="polite"></div>
+  <audio id="audio" preload="metadata"></audio>
+  <script src="app.js"></script>
+</body>
+</html>
