@@ -3,6 +3,9 @@ const $ = (selector, root = document) => root.querySelector(selector)
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)]
 const icon = (name) => `<svg aria-hidden="true"><use href="#i-${name}"></use></svg>`
 const playbackSessionStorageKey = 'menoradio.playbackSession.v1'
+const lyricsClockIntervalMs = 180
+const lyricsClockMinimumDelayMs = 8
+const lyricActivationToleranceSeconds = .06
 
 const dom = {
   page: $('#page'),
@@ -75,7 +78,7 @@ const state = {
     opacity: 1,
     noTranslationPosition: 'bottom',
   },
-  floatingLyricsClockTimer: 0,
+  lyricsClockTimer: 0,
   liked: new Set(),
   recent: [],
   loginGeneration: 0,
@@ -997,7 +1000,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.11.6-preview'
+  const version = '0.11.7-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1600,6 +1603,7 @@ async function handlePlaybackFailure(track, generation, error) {
 async function loadTrack(track, autoplay = true) {
   if (!track) return
   const generation = ++state.audioLoadGeneration
+  stopLyricsClock()
   const loadId = track.id
   state.current = track
   state.queueIndex = currentQueueIndex()
@@ -1889,6 +1893,7 @@ function updatePlayModeButtons() {
 function seekFromRange(element) {
   if (!Number.isFinite(dom.audio.duration)) return
   dom.audio.currentTime = (Number(element.value) / Number(element.max)) * dom.audio.duration
+  startLyricsClock()
 }
 
 function lrcStampTime(stamp) {
@@ -2003,7 +2008,10 @@ function renderLyrics(lines, status = 'ready') {
   }
   dom.lyricsScroller.innerHTML = lines.map((line, index) => `<div class="lyric-line" data-lyric-index="${index}" data-time="${line.time}"><div class="lyric-content"><div class="lyric-original">${escapeHtml(line.text)}</div>${line.translation ? `<div class="lyric-translation translation">${escapeHtml(line.translation)}</div>` : ''}</div></div>`).join('')
   updateLyricVisibility()
-  requestAnimationFrame(() => updateActiveLyric(dom.audio.currentTime || 0, true, true))
+  requestAnimationFrame(() => {
+    updateActiveLyric(dom.audio.currentTime || 0, true, true)
+    startLyricsClock()
+  })
 }
 
 function updateLyricVisibility() {
@@ -2028,28 +2036,62 @@ function syncFloatingLyrics(force = false) {
   bridge.floatingLyrics.update(payload).catch(() => {})
 }
 
-function refreshFloatingLyricsFromPlayback(force = false) {
-  if (state.lyrics.length) updateActiveLyric(dom.audio.currentTime || 0)
+function syncLyricsToPlaybackClock(force = false) {
+  const current = dom.audio.currentTime || 0
+  if (state.lyrics.length) updateActiveLyric(current)
   syncFloatingLyrics(force)
+  return current
 }
 
-function stopFloatingLyricsClock() {
-  if (!state.floatingLyricsClockTimer) return
-  window.clearInterval(state.floatingLyricsClockTimer)
-  state.floatingLyricsClockTimer = 0
+function nextLyricsClockBoundary(time) {
+  let boundary = Number.POSITIVE_INFINITY
+  for (const line of state.lyrics) {
+    const candidate = Math.max(0, Number(line.time) - lyricActivationToleranceSeconds)
+    if (candidate > time) {
+      boundary = candidate
+      break
+    }
+  }
+  for (const marker of state.lyricBreaks) {
+    const candidate = Number(marker)
+    if (candidate > time) {
+      boundary = Math.min(boundary, candidate)
+      break
+    }
+  }
+  return boundary
 }
 
-function startFloatingLyricsClock() {
-  stopFloatingLyricsClock()
-  refreshFloatingLyricsFromPlayback(true)
-  state.floatingLyricsClockTimer = window.setInterval(() => {
+function stopLyricsClock() {
+  if (!state.lyricsClockTimer) return
+  window.clearTimeout(state.lyricsClockTimer)
+  state.lyricsClockTimer = 0
+}
+
+function scheduleLyricsClock(time, generation = state.audioLoadGeneration) {
+  if (dom.audio.paused || generation !== state.audioLoadGeneration) return
+  const boundary = nextLyricsClockBoundary(time)
+  const playbackRate = Math.max(.05, Number(dom.audio.playbackRate) || 1)
+  const boundaryDelay = Number.isFinite(boundary)
+    ? Math.max(lyricsClockMinimumDelayMs, Math.ceil(((boundary - time) * 1000) / playbackRate))
+    : lyricsClockIntervalMs
+  const delay = Math.min(lyricsClockIntervalMs, boundaryDelay)
+  state.lyricsClockTimer = window.setTimeout(() => {
+    state.lyricsClockTimer = 0
+    if (generation !== state.audioLoadGeneration) return
     if (dom.audio.paused) {
-      stopFloatingLyricsClock()
       syncFloatingLyrics(true)
       return
     }
-    refreshFloatingLyricsFromPlayback()
-  }, 250)
+    const current = syncLyricsToPlaybackClock()
+    scheduleLyricsClock(current, generation)
+  }, delay)
+}
+
+function startLyricsClock() {
+  stopLyricsClock()
+  const current = syncLyricsToPlaybackClock(true)
+  scheduleLyricsClock(current)
 }
 
 function lyricOpacity(lineIndex, activeIndex, focusIndex = state.focusLyric) {
@@ -2115,7 +2157,7 @@ function animateLyricScale(line, currentScale, lineIndex, previousActive, nextAc
 function resolveLyricState(time) {
   let started = -1
   for (let index = 0; index < state.lyrics.length; index += 1) {
-    if (state.lyrics[index].time <= time + .06) started = index
+    if (state.lyrics[index].time <= time + lyricActivationToleranceSeconds) started = index
     else break
   }
   if (started < 0) return { active: -1, focus: 0 }
@@ -3497,17 +3539,19 @@ function bindEvents() {
 
   dom.audio.addEventListener('play', () => {
     setPlayIcons(true)
-    startFloatingLyricsClock()
+    startLyricsClock()
   })
   dom.audio.addEventListener('playing', () => {
     resetPlaybackFailureCycle()
-    startFloatingLyricsClock()
+    startLyricsClock()
   })
   dom.audio.addEventListener('pause', () => {
     setPlayIcons(false)
-    stopFloatingLyricsClock()
+    stopLyricsClock()
     syncFloatingLyrics(true)
   })
+  dom.audio.addEventListener('seeked', startLyricsClock)
+  dom.audio.addEventListener('ratechange', startLyricsClock)
   dom.audio.addEventListener('volumechange', updateVolumeUi)
   dom.audio.addEventListener('ended', onTrackEnded)
   dom.audio.addEventListener('timeupdate', () => {
@@ -3876,6 +3920,7 @@ function bindEvents() {
       setManualLyricReadability(false, false)
       dom.audio.currentTime = Number(line.dataset.time)
       updateActiveLyric(dom.audio.currentTime, false, true)
+      startLyricsClock()
     }
   })
   dom.lyricsScroller.addEventListener('wheel', (event) => {
@@ -4125,11 +4170,22 @@ function bindEvents() {
 
   if ('mediaSession' in navigator) {
     const actions = {
-      play: () => dom.audio.play(), pause: () => dom.audio.pause(),
+      play: () => dom.audio.play(),
+      pause: () => dom.audio.pause(),
       previoustrack: () => nextTrack(-1), nexttrack: () => nextTrack(1),
-      seekto: (details) => { if (details.seekTime != null) dom.audio.currentTime = details.seekTime },
-      seekbackward: (details) => { dom.audio.currentTime = Math.max(0, dom.audio.currentTime - (details.seekOffset || 10)) },
-      seekforward: (details) => { dom.audio.currentTime = Math.min(dom.audio.duration || Infinity, dom.audio.currentTime + (details.seekOffset || 10)) },
+      seekto: (details) => {
+        if (details.seekTime == null) return
+        dom.audio.currentTime = details.seekTime
+        startLyricsClock()
+      },
+      seekbackward: (details) => {
+        dom.audio.currentTime = Math.max(0, dom.audio.currentTime - (details.seekOffset || 10))
+        startLyricsClock()
+      },
+      seekforward: (details) => {
+        dom.audio.currentTime = Math.min(dom.audio.duration || Infinity, dom.audio.currentTime + (details.seekOffset || 10))
+        startLyricsClock()
+      },
     }
     for (const [action, handler] of Object.entries(actions)) {
       try { navigator.mediaSession.setActionHandler(action, handler) } catch {}
