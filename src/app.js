@@ -1000,7 +1000,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.11.7-preview'
+  const version = '0.11.8-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1400,7 +1400,7 @@ function restorePlaybackSession() {
   state.focusLyric = 0
   state.lyrics = []
   state.lyricBreaks = []
-  state.audioLoadGeneration += 1
+  const generation = ++state.audioLoadGeneration
   dom.audio.pause()
   dom.audio.removeAttribute('src')
   try { dom.audio.load() } catch {}
@@ -1423,6 +1423,12 @@ function restorePlaybackSession() {
     dom.nowArtist.textContent = state.current.artist
     renderQueue()
   }
+  // Restoring the queue is intentionally not the same as loading audio: the
+  // player must remain paused at 0:00. Lyrics are independent metadata though,
+  // so preload them for the restored track instead of leaving the immersive
+  // page on its initial placeholder until the first press of Play.
+  renderLyrics([], 'loading')
+  void fetchLyrics(state.current, generation)
   return true
 }
 
@@ -2135,12 +2141,17 @@ function lyricContentScale(content) {
 function animateLyricScale(line, currentScale, lineIndex, previousActive, nextActive, immediate) {
   const content = $('.lyric-content', line)
   if (!content) return
-  content.getAnimations().filter((animation) => animation.id?.startsWith('lyric-scale-')).forEach((animation) => animation.cancel())
-  const target = lineIndex === nextActive ? 1.038 : 1
-  if (immediate || Math.abs(currentScale - target) < .001 || matchMedia('(prefers-reduced-motion: reduce)').matches) return
   const incoming = lineIndex === nextActive
   const outgoing = lineIndex === previousActive
+  // During an explicit lyric break, the outgoing line starts shrinking while
+  // active becomes -1. If the next line starts before that animation settles,
+  // the old line is neither incoming nor outgoing in the new transition. Do
+  // not cancel its in-flight animation in that case: cancelling would expose
+  // the non-active CSS scale (1) immediately and create a visible snap.
   if (!incoming && !outgoing) return
+  content.getAnimations().filter((animation) => animation.id?.startsWith('lyric-scale-')).forEach((animation) => animation.cancel())
+  const target = incoming ? 1.038 : 1
+  if (immediate || Math.abs(currentScale - target) < .001 || matchMedia('(prefers-reduced-motion: reduce)').matches) return
   const animation = content.animate([
     { transform: `scale(${currentScale.toFixed(4)})` },
     { transform: `scale(${target})` },
