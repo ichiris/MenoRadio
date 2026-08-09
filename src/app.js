@@ -1000,7 +1000,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.11.8-preview'
+  const version = '0.12.0-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -2052,9 +2052,17 @@ function syncLyricsToPlaybackClock(force = false) {
 function nextLyricsClockBoundary(time) {
   let boundary = Number.POSITIVE_INFINITY
   for (const line of state.lyrics) {
-    const candidate = Math.max(0, Number(line.time) - lyricActivationToleranceSeconds)
-    if (candidate > time) {
-      boundary = candidate
+    const lineTime = Number(line.time)
+    const activation = Math.max(0, lineTime - lyricActivationToleranceSeconds)
+    if (activation > time) {
+      boundary = activation
+      break
+    }
+    // A very short explicit break can begin after the early activation point
+    // of its following line. Keep the real line timestamp as a boundary too,
+    // otherwise the break state would not be revisited until the polling cap.
+    if (lineTime > time) {
+      boundary = lineTime
       break
     }
   }
@@ -2138,20 +2146,16 @@ function lyricContentScale(content) {
   }
 }
 
-function animateLyricScale(line, currentScale, lineIndex, previousActive, nextActive, immediate) {
+function animateLyricScale(line, target, immediate) {
+  if (!line) return
   const content = $('.lyric-content', line)
   if (!content) return
-  const incoming = lineIndex === nextActive
-  const outgoing = lineIndex === previousActive
-  // During an explicit lyric break, the outgoing line starts shrinking while
-  // active becomes -1. If the next line starts before that animation settles,
-  // the old line is neither incoming nor outgoing in the new transition. Do
-  // not cancel its in-flight animation in that case: cancelling would expose
-  // the non-active CSS scale (1) immediately and create a visible snap.
-  if (!incoming && !outgoing) return
-  content.getAnimations().filter((animation) => animation.id?.startsWith('lyric-scale-')).forEach((animation) => animation.cancel())
-  const target = incoming ? 1.038 : 1
+  const currentScale = lyricContentScale(content)
+  const animations = content.getAnimations().filter((animation) => animation.id?.startsWith('lyric-scale-'))
+  animations.forEach((animation) => animation.cancel())
+  content.style.setProperty('--lyric-scale', target.toFixed(4))
   if (immediate || Math.abs(currentScale - target) < .001 || matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  const incoming = target > 1
   const animation = content.animate([
     { transform: `scale(${currentScale.toFixed(4)})` },
     { transform: `scale(${target})` },
@@ -2161,56 +2165,102 @@ function animateLyricScale(line, currentScale, lineIndex, previousActive, nextAc
     easing: incoming ? 'cubic-bezier(.22,.61,.36,1)' : 'cubic-bezier(.28,0,.35,1)',
     fill: 'both',
   })
-  animation.id = `lyric-scale-${lineIndex}`
+  animation.id = `lyric-scale-${line.dataset.lyricIndex || 'line'}`
   animation.addEventListener('finish', () => animation.cancel(), { once: true })
 }
 
-function resolveLyricState(time) {
-  let started = -1
+function lyricIndexAt(time) {
+  let indexAtTime = -1
   for (let index = 0; index < state.lyrics.length; index += 1) {
-    if (state.lyrics[index].time <= time + lyricActivationToleranceSeconds) started = index
+    if (state.lyrics[index].time <= time) indexAtTime = index
     else break
   }
-  if (started < 0) return { active: -1, focus: 0 }
-  const next = state.lyrics[started + 1]
-  const current = state.lyrics[started]
-  const explicitBreak = next && state.lyricBreaks.find((marker) => (
-    marker > current.time + .04 && marker < next.time - .04
-  ))
-  if (Number.isFinite(explicitBreak) && time >= explicitBreak && time < next.time - .04) {
-    return { active: -1, focus: started + 1 }
-  }
-  return { active: started, focus: started }
+  return indexAtTime
 }
 
-function updateActiveLyric(time, immediate = false, force = false) {
-  if (!state.lyrics.length) return
-  const nextState = resolveLyricState(time)
-  if (nextState.active === state.activeLyric && nextState.focus === state.focusLyric && !force) return
+function explicitBreakAfter(lineIndex) {
+  const current = state.lyrics[lineIndex]
+  const next = state.lyrics[lineIndex + 1]
+  if (!current || !next) return Number.NaN
+  return state.lyricBreaks.find((marker) => marker > current.time && marker < next.time) ?? Number.NaN
+}
+
+function resolveLyricEmphasis(time) {
+  const chronological = lyricIndexAt(time)
+  if (chronological >= 0) {
+    const next = state.lyrics[chronological + 1]
+    const explicitBreak = explicitBreakAfter(chronological)
+    if (next && Number.isFinite(explicitBreak)) {
+      // An explicit blank timestamp owns the whole gap, however short it is.
+      // Do not let the usual early-activation tolerance highlight the next
+      // line before that gap begins or before its real timestamp is reached.
+      return time >= explicitBreak && time < next.time ? -1 : chronological
+    }
+  }
+  return lyricIndexAt(time + lyricActivationToleranceSeconds)
+}
+
+function resolveLyricScrollFocus(time) {
+  const chronological = lyricIndexAt(time)
+  if (chronological >= 0) {
+    const next = state.lyrics[chronological + 1]
+    const explicitBreak = explicitBreakAfter(chronological)
+    if (next && Number.isFinite(explicitBreak) && time >= explicitBreak && time < next.time) {
+      return chronological + 1
+    }
+  }
+  return Math.max(0, lyricIndexAt(time + lyricActivationToleranceSeconds))
+}
+
+function updateLyricEmphasis(nextActive, nextFocus, immediate = false, force = false) {
   const previousActive = state.activeLyric
   const previousFocus = state.focusLyric
-  const changed = nextState.active !== previousActive || nextState.focus !== previousFocus
-  state.activeLyric = nextState.active
-  state.focusLyric = nextState.focus
+  const activeChanged = nextActive !== previousActive
+  const focusChanged = nextFocus !== previousFocus
+  if (!activeChanged && !focusChanged && !force) return
+  state.activeLyric = nextActive
   syncFloatingLyrics()
   const lines = $$('.lyric-line', dom.lyricsScroller)
-  if (changed || force) lines.forEach((line, lineIndex) => {
-    const currentScale = lyricContentScale($('.lyric-content', line))
-    line.classList.toggle('active', lineIndex === nextState.active)
-    animateLyricOpacity(line, lineIndex, previousActive, previousFocus, nextState.active, nextState.focus, immediate)
-    animateLyricScale(line, currentScale, lineIndex, previousActive, nextState.active, immediate)
+  lines.forEach((line, lineIndex) => {
+    line.classList.toggle('active', lineIndex === nextActive)
+    animateLyricOpacity(line, lineIndex, previousActive, previousFocus, nextActive, nextFocus, immediate)
   })
-  if (state.manualLyricReadable && !immediate) return
-  const focused = lines[nextState.focus]
+
+  // Scaling has its own lifecycle. Only the outgoing and incoming lines are
+  // handed to this controller, so a short explicit break can never make the
+  // following line cancel the outgoing line's still-running shrink animation.
+  if (activeChanged) {
+    if (previousActive >= 0 && previousActive !== nextActive) animateLyricScale(lines[previousActive], 1, immediate)
+    if (nextActive >= 0) animateLyricScale(lines[nextActive], 1.038, immediate)
+  }
+}
+
+function updateLyricScrollFocus(nextFocus, previousActive, nextActive, immediate = false, force = false) {
+  const previousFocus = state.focusLyric
+  const focusChanged = nextFocus !== previousFocus
+  state.focusLyric = nextFocus
+  if ((!focusChanged && !force) || (state.manualLyricReadable && !immediate)) return
+  const lines = $$('.lyric-line', dom.lyricsScroller)
+  const focused = lines[nextFocus]
   if (focused) {
     const desired = Math.max(0, focused.offsetTop - dom.lyricsScroller.clientHeight * state.lyricFocusRatio)
     const last = lines[lines.length - 1]
     const optionClearance = Math.max(60, dom.lyricsScroller.clientHeight * .065)
     const endAligned = Math.max(0, last.offsetTop + last.offsetHeight - (dom.lyricsScroller.clientHeight - optionClearance))
     const target = Math.min(desired, endAligned)
-    const firstLineActivation = previousActive < 0 && nextState.active === 0 && nextState.focus === 0
-    setLyricScrollTarget(target, immediate || firstLineActivation, nextState.focus)
+    const firstLineActivation = previousActive < 0 && nextActive === 0 && nextFocus === 0
+    setLyricScrollTarget(target, immediate || firstLineActivation, nextFocus)
   }
+}
+
+function updateActiveLyric(time, immediate = false, force = false) {
+  if (!state.lyrics.length) return
+  const nextActive = resolveLyricEmphasis(time)
+  const nextFocus = resolveLyricScrollFocus(time)
+  if (nextActive === state.activeLyric && nextFocus === state.focusLyric && !force) return
+  const previousActive = state.activeLyric
+  updateLyricEmphasis(nextActive, nextFocus, immediate, force)
+  updateLyricScrollFocus(nextFocus, previousActive, nextActive, immediate, force)
 }
 
 function smootherStep(value) {
