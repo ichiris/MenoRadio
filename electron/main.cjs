@@ -447,6 +447,40 @@ function sanitizeCookie(input) {
   return [...allowed.entries()].map(([key, value]) => `${key}=${value}`).join('; ')
 }
 
+function authProfileFromBody(body) {
+  const profile = body?.data?.profile || body?.profile || null
+  if (!profile?.userId) return null
+  return profile
+}
+
+async function resolveAuthenticatedProfile(fallback = null) {
+  for (const method of ['login_status', 'user_account']) {
+    try {
+      const body = await callApi(method)
+      const profile = authProfileFromBody(body)
+      if (profile) return profile
+      const userId = body?.account?.id || body?.data?.account?.id
+      if (userId) {
+        try {
+          const detail = await callApi('user_detail', { uid: userId })
+          const detailedProfile = authProfileFromBody(detail)
+          if (detailedProfile) return detailedProfile
+        } catch {}
+      }
+    } catch {}
+  }
+  return fallback?.userId ? fallback : null
+}
+
+async function cookieHasAuthenticatedAccess() {
+  try {
+    const body = await callApi('recommend_songs')
+    return Number(body?.code) === 200 && Array.isArray(body?.data?.dailySongs)
+  } catch {
+    return false
+  }
+}
+
 function createWindow() {
   nativeTheme.themeSource = 'dark'
   const sizeArg = process.argv.find((argument) => argument.startsWith('--size='))
@@ -827,17 +861,15 @@ function registerAuthIpc() {
   ipcMain.handle('auth:state', () => guarded(async () => {
     if (!sessionCookie) return { loggedIn: false, profile: null }
     try {
-      const body = await callApi('login_status')
-      const profile = body.data?.profile || body.profile || null
+      const profile = await resolveAuthenticatedProfile(sessionProfile)
       if (!profile) {
         authStatusMisses += 1
-        if (sessionProfile && authStatusMisses < 3) return { loggedIn: true, profile: sessionProfile, cached: true }
-        saveSession('')
         return { loggedIn: false, profile: null }
       }
       authStatusMisses = 0
+      const cached = profile === sessionProfile
       saveSession(sessionCookie, profile)
-      return { loggedIn: true, profile }
+      return { loggedIn: true, profile, cached }
     } catch (error) {
       if (sessionProfile) return { loggedIn: true, profile: sessionProfile, cached: true }
       throw error
@@ -873,6 +905,7 @@ function registerAuthIpc() {
     }
 
     const previous = sessionCookie
+    const previousProfile = sessionProfile
     try {
       const isEmail = account.includes('@')
       let method = 'login_cellphone'
@@ -890,13 +923,12 @@ function registerAuthIpc() {
         throw new Error(body.message || body.msg || `登录失败（${body.code || '未知错误'}）`)
       }
       sessionCookie = body.cookie
-      const status = await callApi('login_status')
-      const profile = status.data?.profile || status.profile || body.profile || null
+      const profile = authProfileFromBody(body) || await resolveAuthenticatedProfile()
       if (!profile) throw new Error('账号已验证，但未能读取用户资料')
       saveSession(body.cookie, profile)
       return { loggedIn: true, profile }
     } catch (error) {
-      saveSession(previous)
+      saveSession(previous, previousProfile)
       const message = error?.body?.message || error?.message || '登录失败'
       throw new Error(String(message).replaceAll(password, '[hidden]'))
     }
@@ -905,15 +937,20 @@ function registerAuthIpc() {
   ipcMain.handle('auth:import-cookie', (_event, value) => guarded(async () => {
     const cookie = sanitizeCookie(value)
     const previous = sessionCookie
+    const previousProfile = sessionProfile
     sessionCookie = cookie
     try {
-      const body = await callApi('login_status')
-      const profile = body.data?.profile || body.profile || null
-      if (!profile) throw new Error('Cookie 未能通过网易云验证')
+      const profile = await resolveAuthenticatedProfile()
+      if (!profile) {
+        if (await cookieHasAuthenticatedAccess()) {
+          throw new Error('Cookie 已被网易云识别，但账户资料接口要求额外验证；请稍后重试或使用扫码登录。')
+        }
+        throw new Error('Cookie 未能通过网易云验证')
+      }
       saveSession(cookie, profile)
       return { loggedIn: true, profile }
     } catch (error) {
-      sessionCookie = previous
+      saveSession(previous, previousProfile)
       throw error
     }
   }))

@@ -83,6 +83,11 @@ const state = {
   recent: [],
   loginGeneration: 0,
   audioLoadGeneration: 0,
+  audioSourceTrackId: '',
+  audioSourcePromise: null,
+  audioSourcePromiseGeneration: 0,
+  passiveAudioGeneration: 0,
+  pendingSeekTime: null,
   ignoreAudioErrorsUntil: 0,
   manualLyricFrame: 0,
   manualLyricTarget: 0,
@@ -1401,6 +1406,11 @@ function restorePlaybackSession() {
   state.lyrics = []
   state.lyricBreaks = []
   const generation = ++state.audioLoadGeneration
+  state.audioSourceTrackId = ''
+  state.audioSourcePromise = null
+  state.audioSourcePromiseGeneration = 0
+  state.passiveAudioGeneration = generation
+  state.pendingSeekTime = null
   dom.audio.pause()
   dom.audio.removeAttribute('src')
   try { dom.audio.load() } catch {}
@@ -1429,6 +1439,10 @@ function restorePlaybackSession() {
   // page on its initial placeholder until the first press of Play.
   renderLyrics([], 'loading')
   void fetchLyrics(state.current, generation)
+  // Prepare only the media source. Keeping this separate from loadTrack()
+  // preserves the already loaded lyrics and leaves the restored track paused
+  // at 0:00 while still making the progress bar and lyric lines seekable.
+  void ensureAudioSource(state.current, generation, { passive: true })
   return true
 }
 
@@ -1606,6 +1620,105 @@ async function handlePlaybackFailure(track, generation, error) {
   }, 700)
 }
 
+function resetAudioSource(generation = state.audioLoadGeneration, passive = false) {
+  state.audioSourceTrackId = ''
+  state.audioSourcePromise = null
+  state.audioSourcePromiseGeneration = 0
+  state.passiveAudioGeneration = passive ? generation : 0
+  state.pendingSeekTime = null
+  state.ignoreAudioErrorsUntil = performance.now() + 900
+  dom.audio.pause()
+  dom.audio.removeAttribute('src')
+  try { dom.audio.load() } catch {}
+  try { dom.audio.currentTime = 0 } catch {}
+}
+
+function applyPendingAudioSeek() {
+  if (!Number.isFinite(state.pendingSeekTime) || !dom.audio.src || dom.audio.readyState < 1) return false
+  const duration = Number.isFinite(dom.audio.duration) && dom.audio.duration > 0
+    ? dom.audio.duration
+    : Math.max(0, Number(state.current?.duration || 0) / 1000)
+  const target = Math.max(0, duration > 0 ? Math.min(duration, state.pendingSeekTime) : state.pendingSeekTime)
+  try {
+    dom.audio.currentTime = target
+    state.pendingSeekTime = null
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function ensureAudioSource(track, generation = state.audioLoadGeneration, options = {}) {
+  if (!track || String(state.current?.id) !== String(track.id) || generation !== state.audioLoadGeneration) return false
+  const trackId = String(track.id)
+  if (!options.passive) state.passiveAudioGeneration = 0
+  if (dom.audio.src && state.audioSourceTrackId === trackId) {
+    applyPendingAudioSeek()
+    return true
+  }
+  if (state.audioSourcePromise && state.audioSourcePromiseGeneration === generation) {
+    return state.audioSourcePromise
+  }
+
+  state.audioSourcePromiseGeneration = generation
+  if (options.passive) state.passiveAudioGeneration = generation
+  const request = (async () => {
+    try {
+      const body = unwrap(await bridge.data.songUrl(track.id, state.audioQuality))
+      if (String(state.current?.id) !== trackId || generation !== state.audioLoadGeneration) return false
+      const audioSource = body.data?.[0] || {}
+      let url = audioSource.url
+      if (!url) throw playbackError('这首歌暂时无法播放，可能需要会员或所在地区没有版权。', 'unavailable')
+      state.trackReplayGainDb = replayGainDb(audioSource.gain)
+      applyEffectiveAudioVolume()
+      url = String(url).replace(/^http:/, 'https:')
+      state.ignoreAudioErrorsUntil = performance.now() + 900
+      state.audioSourceTrackId = trackId
+      dom.audio.src = url
+      dom.audio.load()
+      applyPendingAudioSeek()
+      return true
+    } catch (error) {
+      if (String(state.current?.id) !== trackId || generation !== state.audioLoadGeneration) return false
+      state.audioSourceTrackId = ''
+      if (state.passiveAudioGeneration !== generation && !isSupersededPlaybackError(error)) {
+        handlePlaybackFailure(track, generation, error?.playbackKind ? error : playbackError(error?.message || '音频连接失败', 'network'))
+      }
+      return false
+    }
+  })()
+  state.audioSourcePromise = request
+  try {
+    return await request
+  } finally {
+    if (state.audioSourcePromise === request) {
+      state.audioSourcePromise = null
+      state.audioSourcePromiseGeneration = 0
+    }
+  }
+}
+
+async function seekCurrentTrack(seconds) {
+  if (!state.current || !Number.isFinite(seconds)) return false
+  const duration = Number.isFinite(dom.audio.duration) && dom.audio.duration > 0
+    ? dom.audio.duration
+    : Math.max(0, Number(state.current.duration || 0) / 1000)
+  const target = Math.max(0, duration > 0 ? Math.min(duration, seconds) : seconds)
+  state.pendingSeekTime = target
+  updateRange(dom.playerProgress, target, Math.max(1, duration))
+  updateRange(dom.immersiveProgress, target, Math.max(1, duration))
+  dom.timeLabel.textContent = `${formatTime(target)} / ${formatTime(duration)}`
+  $('#immersiveCurrent').textContent = formatTime(target)
+  $('#immersiveDuration').textContent = formatTime(duration)
+  updateActiveLyric(target, false, true)
+  const generation = state.audioLoadGeneration
+  const ready = await ensureAudioSource(state.current, generation, { passive: dom.audio.paused })
+  if (generation !== state.audioLoadGeneration || !ready) return false
+  applyPendingAudioSeek()
+  if (!dom.audio.paused) startLyricsClock()
+  return true
+}
+
 async function loadTrack(track, autoplay = true) {
   if (!track) return
   const generation = ++state.audioLoadGeneration
@@ -1619,11 +1732,7 @@ async function loadTrack(track, autoplay = true) {
   state.lyricBreaks = []
   state.trackReplayGainDb = 0
   applyEffectiveAudioVolume()
-  state.ignoreAudioErrorsUntil = performance.now() + 900
-  dom.audio.pause()
-  dom.audio.removeAttribute('src')
-  try { dom.audio.load() } catch {}
-  try { dom.audio.currentTime = 0 } catch {}
+  resetAudioSource(generation, !autoplay)
   updateRange(dom.playerProgress, 0, Math.max(1, track.duration / 1000))
   updateRange(dom.immersiveProgress, 0, Math.max(1, track.duration / 1000))
   dom.timeLabel.textContent = `0:00 / ${formatTime(track.duration / 1000)}`
@@ -1635,19 +1744,11 @@ async function loadTrack(track, autoplay = true) {
   if (!state.recent.some((item) => item.id === track.id)) state.recent.unshift(track)
   state.recent = state.recent.slice(0, 80)
 
+  const ready = await ensureAudioSource(track, generation, { passive: !autoplay })
+  if (!ready || state.current?.id !== loadId || generation !== state.audioLoadGeneration || !autoplay) return
   try {
-    const body = unwrap(await bridge.data.songUrl(track.id, state.audioQuality))
-    if (state.current?.id !== loadId || generation !== state.audioLoadGeneration) return
-    const audioSource = body.data?.[0] || {}
-    let url = audioSource.url
-    if (!url) throw playbackError('这首歌暂时无法播放，可能需要会员或所在地区没有版权。', 'unavailable')
-    state.trackReplayGainDb = replayGainDb(audioSource.gain)
-    applyEffectiveAudioVolume()
-    url = String(url).replace(/^http:/, 'https:')
-    dom.audio.src = url
-    dom.audio.load()
-    if (autoplay) await dom.audio.play()
-    if (state.current?.id !== loadId || generation !== state.audioLoadGeneration) return
+    state.passiveAudioGeneration = 0
+    await dom.audio.play()
   } catch (error) {
     if (state.current?.id !== loadId || generation !== state.audioLoadGeneration) return
     if (isSupersededPlaybackError(error)) return
@@ -1783,16 +1884,28 @@ function refreshPlayingRows() {
   })
 }
 
-function togglePlayback() {
+async function togglePlayback() {
   if (!state.current) {
     const tracks = state.pageTracks.length ? state.pageTracks : state.home?.newSongs
     if (tracks?.length) playTracks(tracks, 0)
     return
   }
   if (!dom.audio.src) {
-    loadTrack(state.current, true)
+    const generation = state.audioLoadGeneration
+    state.passiveAudioGeneration = 0
+    const ready = await ensureAudioSource(state.current, generation)
+    if (!ready || generation !== state.audioLoadGeneration) return
+    try {
+      await dom.audio.play()
+    } catch (error) {
+      if (generation !== state.audioLoadGeneration) return
+      if (error?.name === 'AbortError' || /interrupted by a new load|interrupted by a call to pause/i.test(String(error?.message || ''))) return
+      if (error?.name === 'NotAllowedError') return toast(error.message, '无法开始播放', 'error')
+      handlePlaybackFailure(state.current, generation, error)
+    }
   } else if (dom.audio.paused) {
     const generation = state.audioLoadGeneration
+    state.passiveAudioGeneration = 0
     dom.audio.play().catch((error) => {
       if (generation !== state.audioLoadGeneration) return
       if (error?.name === 'AbortError' || /interrupted by a new load|interrupted by a call to pause/i.test(String(error?.message || ''))) return
@@ -1897,9 +2010,13 @@ function updatePlayModeButtons() {
 }
 
 function seekFromRange(element) {
-  if (!Number.isFinite(dom.audio.duration)) return
-  dom.audio.currentTime = (Number(element.value) / Number(element.max)) * dom.audio.duration
-  startLyricsClock()
+  if (!state.current) return
+  const duration = Number.isFinite(dom.audio.duration) && dom.audio.duration > 0
+    ? dom.audio.duration
+    : Math.max(0, Number(state.current.duration || 0) / 1000)
+  const maximum = Number(element.max)
+  if (!(duration > 0) || !(maximum > 0)) return
+  void seekCurrentTrack((Number(element.value) / maximum) * duration)
 }
 
 function lrcStampTime(stamp) {
@@ -2434,7 +2551,7 @@ function clearUpcomingQueue() {
 }
 
 function clearPlaybackQueue() {
-  state.audioLoadGeneration += 1
+  const generation = ++state.audioLoadGeneration
   state.current = null
   state.queue = []
   state.queueSource = []
@@ -2443,8 +2560,7 @@ function clearPlaybackQueue() {
   state.lyricBreaks = []
   clearPersistedPlaybackSession()
   resetPlaybackFailureCycle()
-  dom.audio.pause()
-  dom.audio.removeAttribute('src')
+  resetAudioSource(generation)
   setPlayIcons(false)
   openImmersive(false)
   renderLyrics([], 'empty')
@@ -3612,6 +3728,12 @@ function bindEvents() {
     syncFloatingLyrics(true)
   })
   dom.audio.addEventListener('seeked', startLyricsClock)
+  dom.audio.addEventListener('loadedmetadata', () => {
+    applyPendingAudioSeek()
+    const duration = dom.audio.duration || (state.current?.duration || 0) / 1000
+    updateRange(dom.playerProgress, dom.audio.currentTime || 0, duration)
+    updateRange(dom.immersiveProgress, dom.audio.currentTime || 0, duration)
+  })
   dom.audio.addEventListener('ratechange', startLyricsClock)
   dom.audio.addEventListener('volumechange', updateVolumeUi)
   dom.audio.addEventListener('ended', onTrackEnded)
@@ -3631,6 +3753,15 @@ function bindEvents() {
   dom.audio.addEventListener('error', () => {
     if (performance.now() < state.ignoreAudioErrorsUntil) return
     if (dom.audio.src && state.current && dom.audio.error) {
+      if (state.passiveAudioGeneration === state.audioLoadGeneration && dom.audio.paused) {
+        state.audioSourceTrackId = ''
+        state.audioSourcePromise = null
+        state.audioSourcePromiseGeneration = 0
+        state.passiveAudioGeneration = 0
+        dom.audio.removeAttribute('src')
+        try { dom.audio.load() } catch {}
+        return
+      }
       const mediaErrorCode = Number(dom.audio.error.code || 0)
       const kind = mediaErrorCode === 4 ? 'unavailable' : 'network'
       const error = playbackError(`音频连接中断（错误代码 ${mediaErrorCode || '未知'}）`, kind, { mediaErrorCode })
@@ -3977,11 +4108,9 @@ function bindEvents() {
   })
   dom.lyricsScroller.addEventListener('click', (event) => {
     const line = event.target.closest('[data-time]')
-    if (line && dom.audio.src) {
+    if (line && state.current) {
       setManualLyricReadability(false, false)
-      dom.audio.currentTime = Number(line.dataset.time)
-      updateActiveLyric(dom.audio.currentTime, false, true)
-      startLyricsClock()
+      void seekCurrentTrack(Number(line.dataset.time))
     }
   })
   dom.lyricsScroller.addEventListener('wheel', (event) => {
@@ -4226,7 +4355,9 @@ function bindEvents() {
     else if (state.route === 'daily') renderDaily()
     else if (state.route === 'search' && state.routePayload?.keywords) searchNow(state.routePayload.keywords, state.routePayload.type || 1018)
     else if (state.route === 'playlist') renderPlaylist(state.routePayload)
-    if (state.current && !dom.audio.src) loadTrack(state.current, false)
+    if (state.current && !dom.audio.src) {
+      void ensureAudioSource(state.current, state.audioLoadGeneration, { passive: true })
+    }
   })
 
   if ('mediaSession' in navigator) {
