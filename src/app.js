@@ -109,6 +109,7 @@ const state = {
   fontSearchTimer: 0,
   audioQuality: localStorage.getItem('menoradio.audioQuality') || 'best',
   audioNormalization: localStorage.getItem('menoradio.audioNormalization') === 'true',
+  mediaLoadingOptimization: localStorage.getItem('menoradio.mediaLoadingOptimization') === 'true',
   userVolume: .75,
   trackReplayGainDb: 0,
   floatingLyrics: {
@@ -317,7 +318,7 @@ function isManagedThumbnailUrl(value) {
 
 function thumbnailAttributes(source, size = 96) {
   const url = String(source || '')
-  return isManagedThumbnailUrl(url)
+  return state.mediaLoadingOptimization && isManagedThumbnailUrl(url)
     ? `src="${transparentThumbnail}" data-thumbnail-src="${attr(url)}" data-thumbnail-size="${size}" data-thumbnail-state="loading" decoding="async"`
     : `src="${attr(url)}"`
 }
@@ -447,6 +448,7 @@ function installThumbnailLoading() {
 }
 
 function playbackCoverUrl(source) {
+  if (!state.mediaLoadingOptimization) return String(source || '').replace(/^http:/, 'https:')
   const pixels = Math.max(960, Math.min(1600, Math.round(720 * Math.max(1, window.devicePixelRatio || 1))))
   return sizedImageUrl(source, pixels)
 }
@@ -497,6 +499,13 @@ function cancelPendingCoverPreloadsExcept(currentUrl) {
   }
 }
 
+function clearCoverPreloads() {
+  for (const entry of upcomingCoverPreloads.values()) {
+    if (!entry.settled) entry.cancel?.()
+  }
+  upcomingCoverPreloads.clear()
+}
+
 function audioPreloadKey(track) {
   return `${String(track?.id || '')}:${state.audioQuality}`
 }
@@ -511,7 +520,7 @@ function releaseAudioPreload(entry) {
 }
 
 function getAudioPreload(track, warmMedia = false) {
-  if (!track?.id) return null
+  if (!state.mediaLoadingOptimization || !track?.id) return null
   const key = audioPreloadKey(track)
   let entry = upcomingAudioPreloads.get(key)
   if (!entry) {
@@ -567,6 +576,7 @@ function cancelPendingAudioPreloadsExcept(track) {
 
 function maybePreloadUpcomingCovers() {
   const generation = state.audioLoadGeneration
+  if (!state.mediaLoadingOptimization) return
   if (dom.audio.paused || !state.current || state.queue.length < 2) return
   if (state.playingGeneration !== generation || state.coverReadyGeneration !== generation || state.lyricsReadyGeneration !== generation) return
   const index = currentQueueIndex()
@@ -1234,7 +1244,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.13.1-preview'
+  const version = '0.13.2-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1248,6 +1258,7 @@ function renderSettings() {
       <section class="settings-card quality-setting-card"><div><h3>音质</h3></div>${choicePickerMarkup('audio-quality', state.audioQuality, audioQualities, '音质')}</section>
       <section class="settings-card"><div><h3>音量均衡</h3></div><label class="setting-switch" title="按歌曲的 ReplayGain 固定调整播放增益"><input type="checkbox" data-audio-normalization ${state.audioNormalization ? 'checked' : ''}><i></i></label></section>
       <button type="button" class="settings-card settings-navigation-card" data-route-link="settings-floating"><h3>悬浮歌词</h3><svg><use href="#i-chevron"/></svg></button>
+      <section class="settings-card"><div><h3>媒体加载优化</h3></div><label class="setting-switch"><input type="checkbox" data-media-loading-optimization ${state.mediaLoadingOptimization ? 'checked' : ''}><i></i></label></section>
       <section class="settings-card data-management-card"><div><h3>数据管理</h3></div><div class="setting-actions"><button class="secondary-button" data-clear-cache>清理缓存(<span data-cache-size>正在计算…</span>)</button><button type="button" class="secondary-button application-reset-button" data-reset-application>重置</button></div></section>
       <section class="settings-card"><div><h3>关于</h3><p>MenoRadio <span data-app-version>${escapeHtml(version)}</span> · 开发者 <button type="button" class="settings-link" data-external="https://github.com/ichiris">@ichiris</button></p></div><div class="setting-actions"><button class="secondary-button" data-external="https://github.com/ichiris/MenoRadio">项目主页 ${icon('external')}</button><button class="secondary-button" data-external="https://github.com/neteasecloudmusicapienhanced/api-enhanced">引用开源项目 ${icon('external')}</button></div></section>
     </div>
@@ -1969,9 +1980,11 @@ function updateNowPlaying(options = {}) {
     return
   }
   const passive = Boolean(options.passive)
-  const cover = passive ? sizedImageUrl(track.cover, thumbnailPixelSize(64)) : playbackCoverUrl(track.cover)
+  const cover = passive && state.mediaLoadingOptimization
+    ? sizedImageUrl(track.cover, thumbnailPixelSize(64))
+    : playbackCoverUrl(track.cover)
   const generation = state.audioLoadGeneration
-  if (!passive) {
+  if (!passive && state.mediaLoadingOptimization) {
     void loadPlaybackCover(cover, 'high').then(() => {
       if (generation !== state.audioLoadGeneration || String(state.current?.id) !== String(track.id)) return
       state.coverReadyGeneration = generation
@@ -4047,6 +4060,18 @@ function bindEvents() {
       localStorage.setItem('menoradio.audioNormalization', String(state.audioNormalization))
       applyEffectiveAudioVolume()
       updateVolumeUi()
+      return
+    }
+    if (event.target.matches('[data-media-loading-optimization]')) {
+      state.mediaLoadingOptimization = event.target.checked
+      localStorage.setItem('menoradio.mediaLoadingOptimization', String(state.mediaLoadingOptimization))
+      state.upcomingPreloadSignature = ''
+      if (state.mediaLoadingOptimization) {
+        maybePreloadUpcomingCovers()
+      } else {
+        clearCoverPreloads()
+        clearAudioPreloads()
+      }
       return
     }
     if (event.target.matches('[data-playlist-search]')) {
