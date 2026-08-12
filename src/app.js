@@ -1244,7 +1244,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.13.2-preview'
+  const version = '0.13.3-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1257,8 +1257,8 @@ function renderSettings() {
       </div></section>
       <section class="settings-card quality-setting-card"><div><h3>音质</h3></div>${choicePickerMarkup('audio-quality', state.audioQuality, audioQualities, '音质')}</section>
       <section class="settings-card"><div><h3>音量均衡</h3></div><label class="setting-switch" title="按歌曲的 ReplayGain 固定调整播放增益"><input type="checkbox" data-audio-normalization ${state.audioNormalization ? 'checked' : ''}><i></i></label></section>
-      <button type="button" class="settings-card settings-navigation-card" data-route-link="settings-floating"><h3>悬浮歌词</h3><svg><use href="#i-chevron"/></svg></button>
       <section class="settings-card"><div><h3>媒体加载优化</h3></div><label class="setting-switch"><input type="checkbox" data-media-loading-optimization ${state.mediaLoadingOptimization ? 'checked' : ''}><i></i></label></section>
+      <button type="button" class="settings-card settings-navigation-card" data-route-link="settings-floating"><h3>悬浮歌词</h3><svg><use href="#i-chevron"/></svg></button>
       <section class="settings-card data-management-card"><div><h3>数据管理</h3></div><div class="setting-actions"><button class="secondary-button" data-clear-cache>清理缓存(<span data-cache-size>正在计算…</span>)</button><button type="button" class="secondary-button application-reset-button" data-reset-application>重置</button></div></section>
       <section class="settings-card"><div><h3>关于</h3><p>MenoRadio <span data-app-version>${escapeHtml(version)}</span> · 开发者 <button type="button" class="settings-link" data-external="https://github.com/ichiris">@ichiris</button></p></div><div class="setting-actions"><button class="secondary-button" data-external="https://github.com/ichiris/MenoRadio">项目主页 ${icon('external')}</button><button class="secondary-button" data-external="https://github.com/neteasecloudmusicapienhanced/api-enhanced">引用开源项目 ${icon('external')}</button></div></section>
     </div>
