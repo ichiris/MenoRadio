@@ -23,9 +23,10 @@ let authStatusMisses = 0
 let installedFontsCache = null
 let resettingApplication = false
 
-const thumbnailConcurrency = 6
+const thumbnailConcurrency = 12
 const thumbnailBytesPerSecond = 1024 * 1024
 const thumbnailMaximumBytes = 2 * 1024 * 1024
+const thumbnailInitialCredit = 64 * 1024
 const thumbnailCacheLimit = 420
 let thumbnailActiveRequests = 0
 let thumbnailBandwidthAvailableAt = 0
@@ -69,16 +70,24 @@ function rememberThumbnail(url, entry) {
   while (thumbnailCache.size > thumbnailCacheLimit) thumbnailCache.delete(thumbnailCache.keys().next().value)
 }
 
-async function downloadThumbnail(url) {
+async function downloadThumbnail(url, forceRefresh = false) {
   await acquireThumbnailSlot()
   try {
-    const response = await net.fetch(url, { cache: 'force-cache', referrerPolicy: 'no-referrer' })
+    // Stagger the first network read as well as subsequent body chunks. Without
+    // this credit, twelve responses can all deliver their first buffered chunk
+    // before backpressure is applied, producing a large one-sample spike in
+    // Task Manager even though the sustained rate is limited correctly.
+    await reserveThumbnailBandwidth(thumbnailInitialCredit)
+    const response = await net.fetch(url, { cache: forceRefresh ? 'reload' : 'force-cache', referrerPolicy: 'no-referrer' })
     if (!response.ok || !response.body) throw new Error(`Thumbnail request failed (${response.status})`)
+    const mimeType = String(response.headers.get('content-type') || '').split(';')[0].toLowerCase()
+    if (!mimeType.startsWith('image/')) throw new Error('Thumbnail response is not an image')
     const contentLength = Number(response.headers.get('content-length') || 0)
     if (contentLength > thumbnailMaximumBytes) throw new Error('Thumbnail response is too large')
     const reader = response.body.getReader()
     const chunks = []
     let total = 0
+    let bandwidthCredit = thumbnailInitialCredit
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -88,12 +97,14 @@ async function downloadThumbnail(url) {
         await reader.cancel()
         throw new Error('Thumbnail response is too large')
       }
-      await reserveThumbnailBandwidth(value.byteLength)
+      const charge = Math.max(0, value.byteLength - bandwidthCredit)
+      bandwidthCredit = Math.max(0, bandwidthCredit - value.byteLength)
+      if (charge) await reserveThumbnailBandwidth(charge)
       chunks.push(Buffer.from(value))
     }
     const data = Buffer.concat(chunks, total)
     const entry = {
-      mimeType: String(response.headers.get('content-type') || 'image/jpeg').split(';')[0],
+      mimeType,
       bytes: Uint8Array.from(data),
     }
     rememberThumbnail(url, entry)
@@ -103,15 +114,16 @@ async function downloadThumbnail(url) {
   }
 }
 
-function getThumbnail(value) {
+function getThumbnail(value, forceRefresh = false) {
   const url = validateThumbnailUrl(value)
+  if (forceRefresh) thumbnailCache.delete(url)
   const cached = thumbnailCache.get(url)
   if (cached) {
     rememberThumbnail(url, cached)
     return Promise.resolve(cached)
   }
   if (thumbnailInflight.has(url)) return thumbnailInflight.get(url)
-  const request = downloadThumbnail(url).finally(() => thumbnailInflight.delete(url))
+  const request = downloadThumbnail(url, forceRefresh).finally(() => thumbnailInflight.delete(url))
   thumbnailInflight.set(url, request)
   return request
 }
@@ -870,7 +882,7 @@ function registerWindowIpc() {
     if (!['https:', 'http:'].includes(parsed.protocol)) throw new Error('Unsupported URL')
     return shell.openExternal(parsed.toString())
   })
-  ipcMain.handle('image:thumbnail', (_event, payload) => getThumbnail(payload?.url))
+  ipcMain.handle('image:thumbnail', (_event, payload) => getThumbnail(payload?.url, payload?.forceRefresh === true))
   ipcMain.handle('floating-lyrics:state', () => ({
     config: floatingLyricsState.config,
     bounds: floatingLyricsState.bounds,
@@ -1058,17 +1070,32 @@ function registerAuthIpc() {
 
 function registerDataIpc() {
   ipcMain.handle('data:home', () => guarded(async () => {
-    const tasks = [
+    if (sessionCookie) {
+      const [recommended, daily] = await Promise.all([
+        callApi('recommend_resource').catch(() => null),
+        callApi('recommend_songs').catch(() => null),
+      ])
+      const hasRecommended = Array.isArray(recommended?.recommend) && recommended.recommend.length > 0
+      const hasDaily = Array.isArray(daily?.data?.dailySongs) && daily.data.dailySongs.length > 0
+      if (hasRecommended && hasDaily) {
+        return { personalized: null, newSongs: null, topPlaylists: null, recommended, daily }
+      }
+      // Public discovery is a fallback, not a second startup payload. Avoiding
+      // five simultaneous API calls substantially reduces the initialization
+      // burst for signed-in users while preserving the same visible content.
+      const [personalized, newSongs, topPlaylists] = await Promise.all([
+        hasRecommended ? Promise.resolve(null) : callApi('personalized', { limit: 10 }),
+        hasDaily ? Promise.resolve(null) : callApi('personalized_newsong', { limit: 12 }),
+        hasRecommended ? Promise.resolve(null) : callApi('top_playlist', { limit: 10, order: 'hot' }),
+      ])
+      return { personalized, newSongs, topPlaylists, recommended, daily }
+    }
+    const [personalized, newSongs, topPlaylists] = await Promise.all([
       callApi('personalized', { limit: 10 }),
       callApi('personalized_newsong', { limit: 12 }),
       callApi('top_playlist', { limit: 10, order: 'hot' }),
-    ]
-    if (sessionCookie) {
-      tasks.push(callApi('recommend_resource').catch(() => null))
-      tasks.push(callApi('recommend_songs').catch(() => null))
-    }
-    const [personalized, newSongs, topPlaylists, recommended, daily] = await Promise.all(tasks)
-    return { personalized, newSongs, topPlaylists, recommended, daily }
+    ])
+    return { personalized, newSongs, topPlaylists, recommended: null, daily: null }
   }))
 
   ipcMain.handle('data:user-playlists', (_event, uid) => guarded(() =>

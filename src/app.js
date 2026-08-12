@@ -94,6 +94,10 @@ const state = {
   lyrics: [],
   lyricBreaks: [],
   lyricsLoading: false,
+  lyricsReadyGeneration: 0,
+  coverReadyGeneration: 0,
+  playingGeneration: 0,
+  upcomingPreloadSignature: '',
   activeLyric: -1,
   showTranslation: true,
   playMode: localStorage.getItem('menoradio.playMode') || 'repeat-all',
@@ -298,18 +302,29 @@ function installImageRetry() {
 const thumbnailBlobCache = new Map()
 const thumbnailLoads = new WeakMap()
 const upcomingCoverPreloads = new Map()
+const upcomingAudioPreloads = new Map()
 let thumbnailObserver = null
+const transparentThumbnail = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='
+
+function isManagedThumbnailUrl(value) {
+  try {
+    const url = new URL(String(value || ''))
+    return url.protocol === 'https:' && (url.hostname.endsWith('music.126.net') || url.hostname.endsWith('music.163.com'))
+  } catch {
+    return false
+  }
+}
 
 function thumbnailAttributes(source, size = 96) {
   const url = String(source || '')
-  return /^https?:/i.test(url)
-    ? `data-thumbnail-src="${attr(url)}" data-thumbnail-size="${size}" loading="lazy" decoding="async"`
+  return isManagedThumbnailUrl(url)
+    ? `src="${transparentThumbnail}" data-thumbnail-src="${attr(url)}" data-thumbnail-size="${size}" data-thumbnail-state="loading" decoding="async"`
     : `src="${attr(url)}"`
 }
 
-function thumbnailPixelSize(cssPixels = 40) {
+function thumbnailPixelSize(cssPixels = 40, maximum = 160) {
   const required = cssPixels * Math.max(1, window.devicePixelRatio || 1)
-  return Math.max(64, Math.min(160, Math.ceil(required / 32) * 32))
+  return Math.max(64, Math.min(maximum, Math.ceil(required / 32) * 32))
 }
 
 function rememberThumbnail(url, blobUrl) {
@@ -322,6 +337,37 @@ function rememberThumbnail(url, blobUrl) {
   }
 }
 
+function forgetThumbnail(url) {
+  const blobUrl = thumbnailBlobCache.get(url)
+  if (blobUrl) URL.revokeObjectURL(blobUrl)
+  thumbnailBlobCache.delete(url)
+}
+
+function applyThumbnailBlob(image, blobUrl) {
+  return new Promise((resolve, reject) => {
+    if (!image.isConnected) return resolve(false)
+    const cleanup = () => {
+      image.removeEventListener('load', loaded)
+      image.removeEventListener('error', failed)
+    }
+    const loaded = () => {
+      cleanup()
+      image.dataset.thumbnailLoaded = 'true'
+      image.dataset.thumbnailState = 'ready'
+      delete image.dataset.thumbnailRetryCycle
+      resolve(true)
+    }
+    const failed = () => {
+      cleanup()
+      reject(new Error('Thumbnail decode failed'))
+    }
+    image.addEventListener('load', loaded, { once: true })
+    image.addEventListener('error', failed, { once: true })
+    image.src = blobUrl
+    if (image.complete && image.naturalWidth > 0) loaded()
+  })
+}
+
 async function loadThumbnail(image, attempt = 0) {
   if (!image?.isConnected || image.dataset.thumbnailLoaded === 'true') return
   const source = image.dataset.thumbnailSrc
@@ -329,25 +375,41 @@ async function loadThumbnail(image, attempt = 0) {
   const requestUrl = sizedImageUrl(source, Number(image.dataset.thumbnailSize || 96))
   const cached = thumbnailBlobCache.get(requestUrl)
   if (cached) {
-    image.src = cached
-    image.dataset.thumbnailLoaded = 'true'
-    return
+    try {
+      await applyThumbnailBlob(image, cached)
+      return
+    } catch {
+      forgetThumbnail(requestUrl)
+    }
   }
   if (thumbnailLoads.has(image)) return thumbnailLoads.get(image)
-  const request = bridge.images.thumbnail(requestUrl).then((response) => {
+  image.dataset.thumbnailState = 'loading'
+  image.src = transparentThumbnail
+  const request = bridge.images.thumbnail(requestUrl, attempt > 0).then(async (response) => {
     if (!response?.bytes?.length) throw new Error('缩略图未返回内容')
     const blobUrl = URL.createObjectURL(new Blob([response.bytes], { type: response.mimeType || 'image/jpeg' }))
     rememberThumbnail(requestUrl, blobUrl)
-    if (image.isConnected) {
-      image.src = blobUrl
-      image.dataset.thumbnailLoaded = 'true'
-    }
+    await applyThumbnailBlob(image, blobUrl)
   }).catch(() => {
-    if (attempt >= 2 || !image.isConnected) return
+    forgetThumbnail(requestUrl)
+    image.dataset.thumbnailLoaded = 'false'
+    image.dataset.thumbnailState = 'loading'
+    image.src = transparentThumbnail
+    if (!image.isConnected) return
+    if (attempt >= 3) {
+      const retryCycle = Number(image.dataset.thumbnailRetryCycle || 0)
+      if (retryCycle >= 2) return
+      image.dataset.thumbnailRetryCycle = String(retryCycle + 1)
+      window.setTimeout(() => {
+        thumbnailLoads.delete(image)
+        loadThumbnail(image, 0)
+      }, 12000)
+      return
+    }
     window.setTimeout(() => {
       thumbnailLoads.delete(image)
       loadThumbnail(image, attempt + 1)
-    }, attempt === 0 ? 520 : 1500)
+    }, [520, 1400, 3200][attempt] || 3200)
   }).finally(() => thumbnailLoads.delete(image))
   thumbnailLoads.set(image, request)
   return request
@@ -360,7 +422,18 @@ function installThumbnailLoading() {
       thumbnailObserver.unobserve(entry.target)
       loadThumbnail(entry.target)
     })
-  }, { root: null, rootMargin: '520px 0px', threshold: 0 })
+  // Keep roughly ten 58px track rows beyond either viewport edge warm. This
+  // avoids a blank strip during quick scrolling without eagerly fetching an
+  // entire playlist as soon as it opens.
+  }, {
+    root: null,
+    rootMargin: '600px 0px',
+    // The page and both queue surfaces are nested scroll containers. Expanding
+    // their scroll clip as well as the viewport keeps about ten nearby rows
+    // warm without turning the whole playlist into an eager image request.
+    scrollMargin: '600px 0px',
+    threshold: 0,
+  })
   const observe = (root) => {
     if (root instanceof HTMLImageElement && root.matches('[data-thumbnail-src]')) thumbnailObserver.observe(root)
     root.querySelectorAll?.('img[data-thumbnail-src]').forEach((image) => thumbnailObserver.observe(image))
@@ -378,19 +451,133 @@ function playbackCoverUrl(source) {
   return sizedImageUrl(source, pixels)
 }
 
-function preloadUpcomingCovers() {
-  if (dom.audio.paused || !state.current || state.queue.length < 2) return
-  const index = currentQueueIndex()
-  upcomingTracks(state.queue, index, 3).forEach((track) => {
-    const url = playbackCoverUrl(track.cover)
-    if (!/^https:/i.test(url) || upcomingCoverPreloads.has(url)) return
-    const image = new Image()
-    image.decoding = 'async'
-    image.referrerPolicy = 'no-referrer'
-    image.src = url
-    upcomingCoverPreloads.set(url, image)
+function loadPlaybackCover(url, priority = 'low') {
+  if (!/^https:/i.test(url)) return Promise.resolve(false)
+  const existing = upcomingCoverPreloads.get(url)
+  if (existing) {
+    if (priority === 'high') existing.image.fetchPriority = 'high'
+    return existing.promise
+  }
+  const image = new Image()
+  image.decoding = 'async'
+  image.fetchPriority = priority
+  image.referrerPolicy = 'no-referrer'
+  const entry = { image, promise: null, settled: false, cancel: null }
+  const promise = new Promise((resolve) => {
+    const finish = (loaded) => {
+      if (entry.settled) return
+      entry.settled = true
+      resolve(loaded)
+    }
+    image.onload = () => finish(true)
+    image.onerror = () => finish(false)
+    entry.cancel = () => {
+      finish(false)
+      image.onload = null
+      image.onerror = null
+      image.src = transparentThumbnail
+    }
   })
-  while (upcomingCoverPreloads.size > 36) upcomingCoverPreloads.delete(upcomingCoverPreloads.keys().next().value)
+  entry.promise = promise
+  upcomingCoverPreloads.set(url, entry)
+  image.src = url
+  while (upcomingCoverPreloads.size > 36) {
+    const oldest = upcomingCoverPreloads.keys().next().value
+    if (oldest === url) break
+    upcomingCoverPreloads.delete(oldest)
+  }
+  return promise
+}
+
+function cancelPendingCoverPreloadsExcept(currentUrl) {
+  for (const [url, entry] of upcomingCoverPreloads) {
+    if (url === currentUrl || entry.settled) continue
+    entry.cancel?.()
+    upcomingCoverPreloads.delete(url)
+  }
+}
+
+function audioPreloadKey(track) {
+  return `${String(track?.id || '')}:${state.audioQuality}`
+}
+
+function releaseAudioPreload(entry) {
+  const media = entry?.media
+  if (!media) return
+  media.pause()
+  media.removeAttribute('src')
+  try { media.load() } catch {}
+  entry.media = null
+}
+
+function getAudioPreload(track, warmMedia = false) {
+  if (!track?.id) return null
+  const key = audioPreloadKey(track)
+  let entry = upcomingAudioPreloads.get(key)
+  if (!entry) {
+    entry = {
+      key,
+      trackId: String(track.id),
+      sourcePromise: null,
+      source: null,
+      media: null,
+    }
+    entry.sourcePromise = bridge.data.songUrl(track.id, state.audioQuality).then((response) => {
+      const body = unwrap(response)
+      const source = body.data?.[0] || {}
+      if (!source.url) throw playbackError('这首歌暂时无法播放，可能需要会员或所在地区没有版权。', 'unavailable')
+      entry.source = { ...source, url: String(source.url).replace(/^http:/, 'https:') }
+      return entry.source
+    }).catch((error) => {
+      if (upcomingAudioPreloads.get(key) === entry) upcomingAudioPreloads.delete(key)
+      releaseAudioPreload(entry)
+      throw error
+    })
+    upcomingAudioPreloads.set(key, entry)
+  }
+  if (warmMedia && !entry.media) {
+    void entry.sourcePromise.then((source) => {
+      if (upcomingAudioPreloads.get(key) !== entry || entry.media) return
+      const media = new Audio()
+      media.preload = 'auto'
+      media.src = source.url
+      entry.media = media
+      media.load()
+    }).catch(() => {})
+  }
+  return entry
+}
+
+function trimAudioPreloads(keepKeys) {
+  for (const [key, entry] of upcomingAudioPreloads) {
+    if (keepKeys.has(key)) continue
+    releaseAudioPreload(entry)
+    upcomingAudioPreloads.delete(key)
+  }
+}
+
+function clearAudioPreloads() {
+  trimAudioPreloads(new Set())
+}
+
+function cancelPendingAudioPreloadsExcept(track) {
+  const keep = track?.id ? new Set([audioPreloadKey(track)]) : new Set()
+  trimAudioPreloads(keep)
+}
+
+function maybePreloadUpcomingCovers() {
+  const generation = state.audioLoadGeneration
+  if (dom.audio.paused || !state.current || state.queue.length < 2) return
+  if (state.playingGeneration !== generation || state.coverReadyGeneration !== generation || state.lyricsReadyGeneration !== generation) return
+  const index = currentQueueIndex()
+  const tracks = upcomingTracks(state.queue, index, 3)
+  const signature = `${generation}:${tracks.map((track) => track.id).join(',')}`
+  if (state.upcomingPreloadSignature === signature) return
+  state.upcomingPreloadSignature = signature
+  tracks.forEach((track) => { void loadPlaybackCover(playbackCoverUrl(track.cover), 'low') })
+  const keepAudioKeys = new Set([audioPreloadKey(state.current), ...tracks.map(audioPreloadKey)])
+  trimAudioPreloads(keepAudioKeys)
+  tracks.forEach((track) => getAudioPreload(track, true))
 }
 
 function imageOf(source, label = 'M') {
@@ -479,7 +666,7 @@ function renderCards(playlists) {
   return `<div class="card-grid">${playlists.map((playlistInput) => {
     const playlist = playlistInput.cover ? playlistInput : normalizePlaylist(playlistInput)
     return `<button class="music-card" data-playlist-id="${attr(playlist.id)}">
-      <span class="card-cover-wrap"><img class="card-cover" src="${attr(playlist.cover)}" alt=""><span class="card-play">${icon('play')}</span></span>
+      <span class="card-cover-wrap"><img class="card-cover" ${thumbnailAttributes(playlist.cover, thumbnailPixelSize(220, 384))} alt=""><span class="card-play">${icon('play')}</span></span>
       <span class="card-title">${escapeHtml(playlist.name)}</span>
       <span class="card-subtitle">${playlist.creator ? escapeHtml(playlist.creator) : `${formatCount(playlist.playCount)} 次播放`}</span>
     </button>`
@@ -725,7 +912,7 @@ function searchEntities(items, kind) {
     const cover = imageOf(item, name)
     const subtitle = kind === 'playlists' ? (item.creator?.nickname || `${Number(item.trackCount || 0)} 首`) : kind === 'albums' ? artistOf(item) : kind === 'artists' ? `${Number(item.musicSize || 0)} 首歌曲` : (item.signature || '网易云音乐用户')
     const action = kind === 'playlists' ? `data-playlist-id="${attr(item.id)}"` : kind === 'users' ? `data-user-id="${attr(item.userId || item.id)}" data-user-name="${attr(name)}"` : `data-search-refine="${attr(name)}"`
-    return `<button class="search-entity" ${action}><img src="${attr(cover)}" alt=""><span><strong>${escapeHtml(name)}</strong><small>${escapeHtml(subtitle)}</small></span></button>`
+    return `<button class="search-entity" ${action}><img ${thumbnailAttributes(cover, thumbnailPixelSize(48))} alt=""><span><strong>${escapeHtml(name)}</strong><small>${escapeHtml(subtitle)}</small></span></button>`
   }).join('')}</div></section>`
 }
 
@@ -1047,7 +1234,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.13.0-preview'
+  const version = '0.13.1-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1448,6 +1635,11 @@ function restorePlaybackSession() {
   state.lyrics = []
   state.lyricBreaks = []
   const generation = ++state.audioLoadGeneration
+  state.lyricsLoading = false
+  state.lyricsReadyGeneration = 0
+  state.coverReadyGeneration = 0
+  state.playingGeneration = 0
+  state.upcomingPreloadSignature = ''
   state.audioSourceTrackId = ''
   state.audioSourcePromise = null
   state.audioSourcePromiseGeneration = 0
@@ -1465,7 +1657,7 @@ function restorePlaybackSession() {
     $('#immersiveDuration').textContent = formatTime(state.current.duration / 1000)
     setPlayIcons(false)
     updateRadioModeUi()
-    updateNowPlaying()
+    updateNowPlaying({ passive: true })
   } catch (error) {
     // The saved queue is valid even if an optional renderer integration
     // (Media Session, backdrop decoding, etc.) is unavailable at startup.
@@ -1475,16 +1667,10 @@ function restorePlaybackSession() {
     dom.nowArtist.textContent = state.current.artist
     renderQueue()
   }
-  // Restoring the queue is intentionally not the same as loading audio: the
-  // player must remain paused at 0:00. Lyrics are independent metadata though,
-  // so preload them for the restored track instead of leaving the immersive
-  // page on its initial placeholder until the first press of Play.
+  // Restoring a paused queue must stay entirely local. Resolving media and
+  // lyrics here used to overlap the initial home requests and caused a large
+  // network burst immediately after initialization.
   renderLyrics([], 'loading')
-  void fetchLyrics(state.current, generation)
-  // Prepare only the media source. Keeping this separate from loadTrack()
-  // preserves the already loaded lyrics and leaves the restored track paused
-  // at 0:00 while still making the progress bar and lyric lines seekable.
-  void ensureAudioSource(state.current, generation, { passive: true })
   return true
 }
 
@@ -1666,10 +1852,15 @@ async function ensureAudioSource(track, generation = state.audioLoadGeneration, 
   if (options.passive) state.passiveAudioGeneration = generation
   const request = (async () => {
     try {
-      const body = unwrap(await bridge.data.songUrl(track.id, state.audioQuality))
+      // Reuse URL resolution and Chromium's partially warmed media cache when
+      // this track was one of the next three entries. Switching tracks then
+      // continues the existing request instead of starting from zero.
+      const preload = getAudioPreload(track, false)
+      const audioSource = preload
+        ? await preload.sourcePromise
+        : unwrap(await bridge.data.songUrl(track.id, state.audioQuality)).data?.[0]
       if (String(state.current?.id) !== trackId || generation !== state.audioLoadGeneration) return false
-      const audioSource = body.data?.[0] || {}
-      let url = audioSource.url
+      let url = audioSource?.url
       if (!url) throw playbackError('这首歌暂时无法播放，可能需要会员或所在地区没有版权。', 'unavailable')
       state.trackReplayGainDb = replayGainDb(audioSource.gain)
       applyEffectiveAudioVolume()
@@ -1726,12 +1917,21 @@ async function loadTrack(track, autoplay = true) {
   const generation = ++state.audioLoadGeneration
   stopLyricsClock()
   const loadId = track.id
+  cancelPendingCoverPreloadsExcept(playbackCoverUrl(track.cover))
+  // Preserve the selected track's in-flight media warmer, but immediately stop
+  // unrelated upcoming audio so it cannot compete with the newly current song.
+  cancelPendingAudioPreloadsExcept(track)
   state.current = track
   state.queueIndex = currentQueueIndex()
   state.activeLyric = -1
   state.focusLyric = 0
   state.lyrics = []
   state.lyricBreaks = []
+  state.lyricsLoading = false
+  state.lyricsReadyGeneration = 0
+  state.coverReadyGeneration = 0
+  state.playingGeneration = 0
+  state.upcomingPreloadSignature = ''
   state.trackReplayGainDb = 0
   applyEffectiveAudioVolume()
   resetAudioSource(generation, !autoplay)
@@ -1742,7 +1942,7 @@ async function loadTrack(track, autoplay = true) {
   $('#immersiveDuration').textContent = formatTime(track.duration / 1000)
   updateNowPlaying()
   renderLyrics([], 'loading')
-  fetchLyrics(track, generation)
+  void fetchLyrics(track, generation)
   if (!state.recent.some((item) => item.id === track.id)) state.recent.unshift(track)
   state.recent = state.recent.slice(0, 80)
 
@@ -1758,7 +1958,7 @@ async function loadTrack(track, autoplay = true) {
   }
 }
 
-function updateNowPlaying() {
+function updateNowPlaying(options = {}) {
   const track = state.current
   dom.playerBar.classList.toggle('empty', !track)
   if (!track) {
@@ -1768,7 +1968,16 @@ function updateNowPlaying() {
     renderQueue()
     return
   }
-  const cover = playbackCoverUrl(track.cover)
+  const passive = Boolean(options.passive)
+  const cover = passive ? sizedImageUrl(track.cover, thumbnailPixelSize(64)) : playbackCoverUrl(track.cover)
+  const generation = state.audioLoadGeneration
+  if (!passive) {
+    void loadPlaybackCover(cover, 'high').then(() => {
+      if (generation !== state.audioLoadGeneration || String(state.current?.id) !== String(track.id)) return
+      state.coverReadyGeneration = generation
+      maybePreloadUpcomingCovers()
+    })
+  }
   dom.nowCover.textContent = ''
   dom.nowCover.style.backgroundImage = `url("${cover.replace(/["\\]/g, '')}")`
   dom.nowCover.style.backgroundSize = 'cover'
@@ -1777,7 +1986,7 @@ function updateNowPlaying() {
   $('#immersiveCover').src = cover
   $('#immersiveTitle').textContent = track.name
   $('#immersiveArtist').textContent = track.artist
-  updateImmersiveBackdrop(cover)
+  if (!passive) updateImmersiveBackdrop(cover)
   const liked = state.liked.has(track.id)
   $('#likeButton').classList.toggle('active', liked)
   $('#immersiveLike').classList.toggle('active', liked)
@@ -1797,6 +2006,15 @@ function updateNowPlaying() {
   }
   refreshPlayingRows()
   renderQueue()
+}
+
+function updateLikeButtonsOnly() {
+  const liked = Boolean(state.current && state.liked.has(String(state.current.id)))
+  for (const button of [$('#likeButton'), $('#immersiveLike')]) {
+    if (!button) continue
+    button.classList.toggle('active', liked)
+    button.setAttribute('aria-label', liked ? '浠庢垜鍠滄鐨勯煶涔愮Щ闄?' : '娣诲姞鍒版垜鍠滄鐨勯煶涔?')
+  }
 }
 
 function updateImmersiveBackdrop(url) {
@@ -1895,6 +2113,8 @@ async function togglePlayback() {
   }
   if (!dom.audio.src) {
     const generation = state.audioLoadGeneration
+    updateNowPlaying()
+    if (!state.lyricsLoading && state.lyricsReadyGeneration !== generation) void fetchLyrics(state.current, generation)
     state.passiveAudioGeneration = 0
     const ready = await ensureAudioSource(state.current, generation)
     if (!ready || generation !== state.audioLoadGeneration) return
@@ -1908,6 +2128,7 @@ async function togglePlayback() {
     }
   } else if (dom.audio.paused) {
     const generation = state.audioLoadGeneration
+    if (!state.lyricsLoading && state.lyricsReadyGeneration !== generation) void fetchLyrics(state.current, generation)
     state.passiveAudioGeneration = 0
     dom.audio.play().catch((error) => {
       if (generation !== state.audioLoadGeneration) return
@@ -2043,7 +2264,9 @@ async function fetchLyrics(track, generation = state.audioLoadGeneration) {
       state.lyricBreaks = originalDocument.breaks
       state.lyrics = merged
       state.lyricsLoading = false
+      state.lyricsReadyGeneration = generation
       renderLyrics(state.lyrics, state.lyrics.length ? 'ready' : 'empty')
+      maybePreloadUpcomingCovers()
       return
     } catch (error) {
       lastError = error
@@ -2055,7 +2278,9 @@ async function fetchLyrics(track, generation = state.audioLoadGeneration) {
   }
   if (state.current?.id === track.id && generation === state.audioLoadGeneration) {
     state.lyricsLoading = false
+    state.lyricsReadyGeneration = generation
     renderLyrics([], 'empty')
+    maybePreloadUpcomingCovers()
     if (lastError) console.warn('[lyrics] Unable to load lyrics after retries:', lastError)
   }
 }
@@ -2473,7 +2698,7 @@ function renderQueue(options = {}) {
     }
   }
   persistPlaybackSession()
-  preloadUpcomingCovers()
+  maybePreloadUpcomingCovers()
 }
 
 function clearUpcomingQueue() {
@@ -3159,6 +3384,9 @@ function openImmersive(open = true) {
   dom.immersive.setAttribute('aria-hidden', String(!open))
   syncFloatingLyrics(true)
   if (open) {
+    const generation = state.audioLoadGeneration
+    if (state.coverReadyGeneration !== generation) updateNowPlaying()
+    if (!state.lyricsLoading && state.lyricsReadyGeneration !== generation) void fetchLyrics(state.current, generation)
     showImmersiveChrome()
     setTimeout(() => updateActiveLyric(dom.audio.currentTime, true, true), 80)
   }
@@ -3230,10 +3458,10 @@ async function loadLikedSongs(uid) {
     const body = unwrap(await bridge.data.likeList(uid))
     if (body?.code && Number(body.code) !== 200) throw new Error(body.message || '收藏列表同步失败')
     state.liked = new Set((body.ids || []).map(String))
-    updateNowPlaying()
+    updateLikeButtonsOnly()
     return true
   } catch {}
-  updateNowPlaying()
+  updateLikeButtonsOnly()
   return false
 }
 
@@ -3661,11 +3889,12 @@ function bindEvents() {
 
   dom.audio.addEventListener('play', () => {
     setPlayIcons(true)
-    preloadUpcomingCovers()
     startLyricsClock()
   })
   dom.audio.addEventListener('playing', () => {
     resetPlaybackFailureCycle()
+    state.playingGeneration = state.audioLoadGeneration
+    maybePreloadUpcomingCovers()
     startLyricsClock()
   })
   dom.audio.addEventListener('pause', () => {
@@ -3675,6 +3904,10 @@ function bindEvents() {
   })
   dom.audio.addEventListener('seeked', startLyricsClock)
   dom.audio.addEventListener('loadedmetadata', () => {
+    // The visible player has now attached to the same URL/cache entry. Release
+    // the hidden warmer so only the current audio element continues streaming.
+    const activePreload = state.current ? upcomingAudioPreloads.get(audioPreloadKey(state.current)) : null
+    if (activePreload?.media) releaseAudioPreload(activePreload)
     applyPendingAudioSeek()
     const duration = dom.audio.duration || (state.current?.duration || 0) / 1000
     updateRange(dom.playerProgress, dom.audio.currentTime || 0, duration)
@@ -4295,6 +4528,15 @@ function bindEvents() {
     state.immersiveLayoutTimer = window.setTimeout(() => applyImmersiveLayout(false), 220)
   })
   window.addEventListener('online', async () => {
+    // Resume thumbnails that exhausted their transient retry budget while the
+    // machine was offline. Keep them in the managed thumbnail path so the
+    // concurrency and bandwidth limits still apply after connectivity returns.
+    document.querySelectorAll('img[data-thumbnail-src]').forEach((image) => {
+      if (image.dataset.thumbnailLoaded === 'true') return
+      delete image.dataset.thumbnailRetryCycle
+      thumbnailLoads.delete(image)
+      void loadThumbnail(image, 0)
+    })
     state.home = null
     await loadAccount()
     if (state.route === 'home') renderHome()
@@ -4502,6 +4744,7 @@ function onPageClick(event) {
     const name = control?.dataset.choiceControl
     const value = choiceOption.dataset.choiceValue
     if (name === 'audio-quality' && audioQualities.some(([optionValue]) => optionValue === value)) {
+      if (state.audioQuality !== value) clearAudioPreloads()
       state.audioQuality = value
       localStorage.setItem('menoradio.audioQuality', value)
       updateChoicePicker(control, value)
@@ -4589,16 +4832,19 @@ async function init() {
     dom.immersive.classList.toggle('fullscreen', state.fullScreen)
     $('#immersiveFullScreen').classList.toggle('active', state.fullScreen)
   }).catch(() => {})
-  renderHome()
-  const accountReady = loadAccount().then(() => {
-    if (state.loggedIn) {
-      state.home = null
-      if (state.route === 'home') renderHome()
-    }
-  }).catch(() => {})
+  // Do not start account/profile synchronization beside the initial home
+  // request. The combined API fan-out and first thumbnail batch was the source
+  // of the large one-sample network spike at the end of initialization. Home
+  // already uses the persisted cookie in the main process, so it can render
+  // first; the sidebar/account state follows without reloading the page.
+  const homeReady = renderHome().catch(() => {})
+  // Account synchronization follows the home request instead of competing
+  // with it. Do not await homeReady outside the timeout race: a stalled
+  // network request must never leave the initialization screen visible forever.
+  const accountReady = homeReady.then(() => loadAccount()).catch(() => {})
   try {
     await Promise.race([
-      accountReady,
+      Promise.allSettled([homeReady, accountReady]),
       new Promise((resolve) => window.setTimeout(resolve, 3200)),
     ])
   } finally {

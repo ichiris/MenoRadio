@@ -184,6 +184,8 @@ kbd { border: 1px solid var(--line); background: rgba(0,0,0,.16); color: var(--t
 .music-card { border: 0; background: transparent; text-align: left; padding: 0; min-width: 0; }
 .card-cover-wrap { display: block; position: relative; width: 100%; aspect-ratio: 1; border-radius: 9px; overflow: hidden; background: #302e36; box-shadow: 0 8px 24px rgba(0,0,0,.16); }
 .card-cover { width: 100%; height: 100%; object-fit: cover; transition: transform .28s ease, filter .28s ease; }
+img[data-thumbnail-state="loading"] { opacity: 0; border-color: transparent !important; }
+img[data-thumbnail-state="ready"] { opacity: 1; }
 .card-play { position: absolute; right: 10px; bottom: 10px; width: 38px; height: 38px; border: 0; border-radius: 50%; background: rgba(245,248,248,.93); color: #233234; display: grid; place-items: center; transform: translateY(9px); opacity: 0; transition: .2s ease; box-shadow: 0 6px 18px rgba(0,0,0,.3); }
 .card-play svg { width: 19px; height: 19px; margin-left: 2px; }
 .music-card:hover .card-cover { transform: scale(1.025); filter: brightness(.8); }.music-card:hover .card-play { transform: translateY(0); opacity: 1; }
@@ -196,7 +198,7 @@ kbd { border: 1px solid var(--line); background: rgba(0,0,0,.16); color: var(--t
 .track-row.playing { background: rgba(var(--accent-rgb),.08); }.track-row.playing .track-name { color: var(--accent-strong); }
 .track-index { color: #69646e; text-align: center; font-size: 12px; }.track-row:hover .track-index { color: var(--text-soft); }
 .track-main { min-width: 0; display: flex; align-items: center; gap: 11px; }
-.track-cover { width: 40px; height: 40px; border-radius: 5px; object-fit: cover; background: #37343d; flex: 0 0 auto; }
+.track-cover { width: 40px; height: 40px; border: 0; border-radius: 5px; object-fit: cover; background: #37343d; flex: 0 0 auto; }
 .track-copy { min-width: 0; display: grid; gap: 3px; }
 .track-name, .track-artist, .track-album { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .track-name { color: #eeeaf0; font-weight: 520; }.track-artist, .track-album { color: #95909a; font-size: 12px; }
