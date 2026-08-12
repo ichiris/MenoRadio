@@ -1,0 +1,35 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="tile" x1="76" y1="54" x2="438" y2="466" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7BDDD3"/>
+      <stop offset="0.5" stop-color="#65C5C2"/>
+      <stop offset="1" stop-color="#4A899C"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="142" y1="156" x2="372" y2="394" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F4F7F5"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="126" y1="78" x2="392" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.24"/>
+      <stop offset="0.46" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <mask id="mark-mask" maskUnits="userSpaceOnUse" x="104" y="118" width="304" height="284">
+      <rect x="104" y="118" width="304" height="284" fill="black"/>
+      <path d="M192 352C171 348 156 327 156 304V184C156 167 176 158 189 168L256 220L323 168C336 158 356 167 356 184V304C356 327 341 348 320 352" stroke="white" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+    <filter id="tile-shadow" x="0" y="0" width="512" height="512" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="9" stdDeviation="12" flood-color="#132725" flood-opacity="0.28"/>
+    </filter>
+    <filter id="mark-shadow" x="92" y="106" width="328" height="308" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="5" stdDeviation="5" flood-color="#225C62" flood-opacity="0.23"/>
+    </filter>
+  </defs>
+  <g filter="url(#tile-shadow)">
+    <rect x="24" y="24" width="464" height="464" rx="138" fill="url(#tile)"/>
+    <rect x="25" y="25" width="462" height="462" rx="137" stroke="#FFFFFF" stroke-opacity="0.2" stroke-width="2"/>
+    <rect x="24" y="24" width="464" height="464" rx="138" fill="url(#sheen)"/>
+  </g>
+  <g filter="url(#mark-shadow)">
+    <rect x="104" y="118" width="304" height="284" fill="url(#mark)" mask="url(#mark-mask)"/>
+  </g>
+</svg>

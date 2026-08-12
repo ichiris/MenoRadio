@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' blob: https:; connect-src 'self' https:; font-src 'self' data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https:; font-src 'self' data:;">
   <title>MenoRadio</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div id="initializingScreen" class="initializing-screen" role="status" aria-label="正在初始化 MenoRadio">
-    <img src="assets/logo.svg" alt="" class="initializing-logo">
+    <img src="assets/icon/app-icon.svg" alt="" class="initializing-logo">
     <div class="initializing-indicator" aria-hidden="true"><span></span></div>
     <strong>正在初始化</strong>
   </div>
@@ -55,7 +55,7 @@
   <div id="app">
     <header class="titlebar">
       <div class="titlebar-drag">
-        <img src="assets/logo.svg" alt="" class="titlebar-logo">
+        <img src="assets/icon/app-icon.svg" alt="" class="titlebar-logo">
         <span class="titlebar-name">MenoRadio</span>
       </div>
       <div class="window-controls">
@@ -204,6 +204,9 @@
   <div id="modalLayer" class="modal-layer" aria-hidden="true"></div>
   <div id="toastLayer" class="toast-layer" aria-live="polite"></div>
   <audio id="audio" preload="metadata"></audio>
+  <script src="core/utils.js"></script>
+  <script src="core/playback-queue.js"></script>
+  <script src="core/lyrics-parser.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

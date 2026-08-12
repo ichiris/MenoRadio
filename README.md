@@ -4,8 +4,6 @@ MenoRadio 是一款面向 Windows 的非官方网易云音乐桌面播放器。�
 LyricEase 的信息密度、Fluent 导航和沉浸歌词体验，但使用独立设计与全新的
 Electron 实现。
 
-![MenoRadio 首页](./menoradio-home.png)
-
 ## 现在可以做什么
 
 - 支持网易云二维码、手机号/邮箱密码与 Cookie 三种登录方式
@@ -20,8 +18,6 @@ Electron 实现。
 - 播放页内音量滑杆、百分比和同步静音图标
 - Chromium Media Session，对 Windows 媒体快捷键提供基础支持
 - 网络请求失败时提供明确的失败状态与重试入口，恢复联网后自动重新加载当前内容
-
-![MenoRadio 沉浸歌词页](./menoradio-player-jump-v3b.png)
 
 ## 直接使用
 
@@ -57,6 +53,8 @@ npm start
 
 ```powershell
 npm run check             # JavaScript 静态语法检查
+npm test                  # 核心工具、播放队列和歌词解析测试
+npm run validate          # 依次执行上述两项检查
 npm run screenshot        # 启动后截取首页
 npm run screenshot:login  # 验证二维码弹窗
 npm run screenshot:player # 验证真实播放与歌词页
@@ -75,8 +73,9 @@ electron/
 src/
   index.html     应用结构与 SVG 图标系统
   styles.css     Fluent 风格、响应式布局与沉浸歌词视觉
-  app.js         路由、播放器、队列、歌词同步和登录状态
-  assets/        MenoRadio 自有矢量资源
+  app.js         路由、播放器、歌词同步、登录状态与界面协调
+  core/          无状态工具、播放队列规则和歌词解析器
+  assets/icon/   MenoRadio 图标 SVG 母版与打包 PNG
 ```
 
 渲染进程启用了 `contextIsolation` 与 sandbox，不能直接访问 Node.js；所有网易云

@@ -1,8 +1,39 @@
 const bridge = window.menoradio
+const {
+  clamp,
+  hexToHsv,
+  hsvToHex,
+  hexToRgbText,
+  parseRgbColor,
+  escapeHtml,
+  attr,
+  truncate,
+  formatTime,
+  formatDuration,
+  formatCount,
+  formatBytes,
+  hashColor,
+  legacyFontNames,
+  fontCss,
+  fontLabel,
+  sizedImageUrl,
+  upcomingTracks,
+  uniqueTracks,
+  shuffleTracks,
+  rotateTracks,
+  buildPlaybackQueue,
+  parseLrcDocument,
+  parseLrc,
+  parseYrc,
+  applyTimedDurations,
+  mergeLyrics,
+} = window.MenoRadioCore
 const $ = (selector, root = document) => root.querySelector(selector)
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)]
 const icon = (name) => `<svg aria-hidden="true"><use href="#i-${name}"></use></svg>`
 const playbackSessionStorageKey = 'menoradio.playbackSession.v1'
+const searchHistoryStorageKey = 'menoradio.searchHistory.v1'
+const searchHistoryLimit = 12
 const lyricsClockIntervalMs = 180
 const lyricsClockMinimumDelayMs = 8
 const lyricActivationToleranceSeconds = .06
@@ -30,6 +61,19 @@ const dom = {
   immersive: $('#immersivePlayer'),
   lyricsScroller: $('#lyricsScroller'),
   initializingScreen: $('#initializingScreen'),
+}
+
+function readSearchHistory() {
+  try {
+    const value = JSON.parse(localStorage.getItem(searchHistoryStorageKey) || '[]')
+    if (!Array.isArray(value)) return []
+    return value
+      .map((item) => String(item || '').trim())
+      .filter((item, index, items) => item && items.findIndex((entry) => entry.toLocaleLowerCase() === item.toLocaleLowerCase()) === index)
+      .slice(0, searchHistoryLimit)
+  } catch {
+    return []
+  }
 }
 
 const state = {
@@ -138,6 +182,7 @@ const state = {
   dragHoverNavigatedPlaylistId: '',
   dragPlaylistTargetElement: null,
   searchType: 1018,
+  searchHistory: readSearchHistory(),
   immersiveView: 'lyrics',
   fullScreen: false,
   maximized: false,
@@ -169,47 +214,6 @@ let floatingColorDraft = null
 let floatingLyricsResetHold = null
 let applicationResetHold = null
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value))
-}
-
-function hexToHsv(hex) {
-  const match = String(hex || '').match(/^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i)
-  const [r, g, b] = match ? match.slice(1).map((value) => parseInt(value, 16) / 255) : [1, 1, 1]
-  const max = Math.max(r, g, b)
-  const min = Math.min(r, g, b)
-  const delta = max - min
-  let h = 0
-  if (delta) {
-    if (max === r) h = ((g - b) / delta) % 6
-    else if (max === g) h = (b - r) / delta + 2
-    else h = (r - g) / delta + 4
-  }
-  return { h: (h * 60 + 360) % 360, s: max ? delta / max : 0, v: max }
-}
-
-function hsvToHex({ h, s, v }) {
-  const chroma = v * s
-  const x = chroma * (1 - Math.abs(((h / 60) % 2) - 1))
-  const m = v - chroma
-  const rgb = h < 60 ? [chroma, x, 0] : h < 120 ? [x, chroma, 0] : h < 180 ? [0, chroma, x] : h < 240 ? [0, x, chroma] : h < 300 ? [x, 0, chroma] : [chroma, 0, x]
-  return `#${rgb.map((value) => Math.round((value + m) * 255).toString(16).padStart(2, '0')).join('')}`
-}
-
-function hexToRgbText(hex) {
-  const match = String(hex || '').match(/^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i)
-  if (!match) return '255, 255, 255'
-  return match.slice(1).map((value) => parseInt(value, 16)).join(', ')
-}
-
-function parseRgbColor(value) {
-  const numbers = String(value || '').match(/\d+(?:\.\d+)?/g)
-  if (!numbers || numbers.length !== 3) return null
-  const rgb = numbers.map((part) => Math.round(Number(part)))
-  if (rgb.some((part) => !Number.isFinite(part) || part < 0 || part > 255)) return null
-  return `#${rgb.map((part) => part.toString(16).padStart(2, '0')).join('')}`
-}
-
 function updateFloatingColorPicker({ preserveRgb = false } = {}) {
   const popover = $('[data-floating-color-popover]', dom.page)
   if (!popover || !floatingColorDraft) return
@@ -232,73 +236,6 @@ function updateFloatingColorFromPointer(event, field) {
   updateFloatingColorPicker()
 }
 
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>'"]/g, (char) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
-  }[char]))
-}
-
-function attr(value) {
-  return escapeHtml(value).replace(/`/g, '&#96;')
-}
-
-function truncate(value, length = 120) {
-  const text = String(value || '').replace(/\s+/g, ' ').trim()
-  return text.length > length ? `${text.slice(0, length)}…` : text
-}
-
-function formatTime(seconds) {
-  if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
-  const whole = Math.floor(seconds)
-  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`
-}
-
-function formatDuration(ms) {
-  return formatTime(Number(ms || 0) / 1000)
-}
-
-function formatCount(value) {
-  const count = Number(value || 0)
-  if (count >= 100000000) return `${(count / 100000000).toFixed(1)} 亿`
-  if (count >= 10000) return `${(count / 10000).toFixed(count >= 100000 ? 0 : 1)} 万`
-  return String(count)
-}
-
-function formatBytes(value) {
-  const bytes = Math.max(0, Number(value || 0))
-  if (bytes < 1024) return `${Math.round(bytes)}B`
-  const units = ['KB', 'MB', 'GB']
-  let size = bytes / 1024
-  let unit = units[0]
-  for (let index = 1; index < units.length && size >= 1024; index += 1) {
-    size /= 1024
-    unit = units[index]
-  }
-  return `${size >= 100 ? size.toFixed(0) : size >= 10 ? size.toFixed(1) : size.toFixed(2)}${unit}`
-}
-
-function hashColor(text, offset = 0) {
-  let hash = 2166136261 + offset
-  for (const char of String(text)) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619)
-  const hue = Math.abs(hash) % 360
-  return `hsl(${hue} 32% ${offset ? 34 : 44}%)`
-}
-
-const fontFamilies = {
-  system: '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif',
-  segoe: '"Segoe UI Variable Text", "Segoe UI", sans-serif',
-  yahei: '"Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
-  sarasa: '"Sarasa UI SC", "Sarasa Gothic SC", "Microsoft YaHei UI", sans-serif',
-  noto: '"Noto Sans CJK SC", "Microsoft YaHei UI", sans-serif',
-}
-
-const legacyFontNames = {
-  segoe: 'Segoe UI Variable Text',
-  yahei: 'Microsoft YaHei UI',
-  sarasa: 'Sarasa UI SC',
-  noto: 'Noto Sans CJK SC',
-}
-
 const audioQualities = [
   ['best', '最佳可用音质'],
   ['standard', '标准（128 kbps）'],
@@ -311,18 +248,6 @@ const audioQualities = [
   ['dolby', '杜比全景声'],
   ['jymaster', '超清母带'],
 ]
-
-function fontCss(value) {
-  if (fontFamilies[value]) return fontFamilies[value]
-  const safe = String(value || '').replace(/["\\]/g, '\\$&')
-  return `"${safe}", "Microsoft YaHei UI", sans-serif`
-}
-
-function fontLabel(value) {
-  if (value === 'system') return '跟随系统'
-  if (legacyFontNames[String(value || '').toLowerCase()]) return legacyFontNames[String(value).toLowerCase()]
-  return String(value || '跟随系统')
-}
 
 function applyDisplaySettings() {
   const legacyName = legacyFontNames[String(state.fontFamily || '').toLowerCase()]
@@ -368,6 +293,104 @@ function installImageRetry() {
       }
     }, retries === 0 ? 420 : 1200)
   }, true)
+}
+
+const thumbnailBlobCache = new Map()
+const thumbnailLoads = new WeakMap()
+const upcomingCoverPreloads = new Map()
+let thumbnailObserver = null
+
+function thumbnailAttributes(source, size = 96) {
+  const url = String(source || '')
+  return /^https?:/i.test(url)
+    ? `data-thumbnail-src="${attr(url)}" data-thumbnail-size="${size}" loading="lazy" decoding="async"`
+    : `src="${attr(url)}"`
+}
+
+function thumbnailPixelSize(cssPixels = 40) {
+  const required = cssPixels * Math.max(1, window.devicePixelRatio || 1)
+  return Math.max(64, Math.min(160, Math.ceil(required / 32) * 32))
+}
+
+function rememberThumbnail(url, blobUrl) {
+  if (thumbnailBlobCache.has(url)) URL.revokeObjectURL(thumbnailBlobCache.get(url))
+  thumbnailBlobCache.set(url, blobUrl)
+  while (thumbnailBlobCache.size > 420) {
+    const [oldestUrl, oldestBlob] = thumbnailBlobCache.entries().next().value
+    thumbnailBlobCache.delete(oldestUrl)
+    URL.revokeObjectURL(oldestBlob)
+  }
+}
+
+async function loadThumbnail(image, attempt = 0) {
+  if (!image?.isConnected || image.dataset.thumbnailLoaded === 'true') return
+  const source = image.dataset.thumbnailSrc
+  if (!source) return
+  const requestUrl = sizedImageUrl(source, Number(image.dataset.thumbnailSize || 96))
+  const cached = thumbnailBlobCache.get(requestUrl)
+  if (cached) {
+    image.src = cached
+    image.dataset.thumbnailLoaded = 'true'
+    return
+  }
+  if (thumbnailLoads.has(image)) return thumbnailLoads.get(image)
+  const request = bridge.images.thumbnail(requestUrl).then((response) => {
+    if (!response?.bytes?.length) throw new Error('缩略图未返回内容')
+    const blobUrl = URL.createObjectURL(new Blob([response.bytes], { type: response.mimeType || 'image/jpeg' }))
+    rememberThumbnail(requestUrl, blobUrl)
+    if (image.isConnected) {
+      image.src = blobUrl
+      image.dataset.thumbnailLoaded = 'true'
+    }
+  }).catch(() => {
+    if (attempt >= 2 || !image.isConnected) return
+    window.setTimeout(() => {
+      thumbnailLoads.delete(image)
+      loadThumbnail(image, attempt + 1)
+    }, attempt === 0 ? 520 : 1500)
+  }).finally(() => thumbnailLoads.delete(image))
+  thumbnailLoads.set(image, request)
+  return request
+}
+
+function installThumbnailLoading() {
+  thumbnailObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (!entry.isIntersecting) return
+      thumbnailObserver.unobserve(entry.target)
+      loadThumbnail(entry.target)
+    })
+  }, { root: null, rootMargin: '520px 0px', threshold: 0 })
+  const observe = (root) => {
+    if (root instanceof HTMLImageElement && root.matches('[data-thumbnail-src]')) thumbnailObserver.observe(root)
+    root.querySelectorAll?.('img[data-thumbnail-src]').forEach((image) => thumbnailObserver.observe(image))
+  }
+  observe(document)
+  new MutationObserver((records) => {
+    records.forEach((record) => record.addedNodes.forEach((node) => {
+      if (node instanceof Element) observe(node)
+    }))
+  }).observe(document.body, { childList: true, subtree: true })
+}
+
+function playbackCoverUrl(source) {
+  const pixels = Math.max(960, Math.min(1600, Math.round(720 * Math.max(1, window.devicePixelRatio || 1))))
+  return sizedImageUrl(source, pixels)
+}
+
+function preloadUpcomingCovers() {
+  if (dom.audio.paused || !state.current || state.queue.length < 2) return
+  const index = currentQueueIndex()
+  upcomingTracks(state.queue, index, 3).forEach((track) => {
+    const url = playbackCoverUrl(track.cover)
+    if (!/^https:/i.test(url) || upcomingCoverPreloads.has(url)) return
+    const image = new Image()
+    image.decoding = 'async'
+    image.referrerPolicy = 'no-referrer'
+    image.src = url
+    upcomingCoverPreloads.set(url, image)
+  })
+  while (upcomingCoverPreloads.size > 36) upcomingCoverPreloads.delete(upcomingCoverPreloads.keys().next().value)
 }
 
 function imageOf(source, label = 'M') {
@@ -473,7 +496,7 @@ function renderTrackTable(tracks, options = {}) {
   }
   return `<div class="track-section">${tracks.map((track, index) => `<div class="track-row ${state.current?.id === track.id ? 'playing' : ''}" data-track-index="${index}" role="button" tabindex="0" draggable="true">
     <span class="track-index">${String(index + 1).padStart(2, '0')}</span>
-    <div class="track-main"><img class="track-cover" src="${attr(track.cover)}" alt=""><span class="track-copy"><span class="track-name">${escapeHtml(track.name)}${track.alias ? ` <small>(${escapeHtml(track.alias)})</small>` : ''}</span><span class="track-artist">${escapeHtml(track.artist)}</span></span></div>
+    <div class="track-main"><img class="track-cover" ${thumbnailAttributes(track.cover, thumbnailPixelSize(40))} alt=""><span class="track-copy"><span class="track-name">${escapeHtml(track.name)}${track.alias ? ` <small>(${escapeHtml(track.alias)})</small>` : ''}</span><span class="track-artist">${escapeHtml(track.artist)}</span></span></div>
     <span class="track-album">${escapeHtml(track.album)}</span>
     <span class="track-duration">${formatDuration(track.duration)}</span>
     <button class="player-icon track-more" aria-label="更多">${icon('more')}</button>
@@ -676,6 +699,24 @@ function searchTabs(query, activeType) {
   return `<div class="search-tabs" role="tablist">${searchTypes.map(([type, label]) => `<button type="button" role="tab" class="${type === activeType ? 'active' : ''}" data-search-type="${type}" data-search-query="${attr(query)}">${escapeHtml(label)}</button>`).join('')}</div>`
 }
 
+function rememberSearchQuery(query) {
+  const value = String(query || '').trim()
+  if (!value) return
+  state.searchHistory = [value, ...state.searchHistory.filter((item) => item.toLocaleLowerCase() !== value.toLocaleLowerCase())]
+    .slice(0, searchHistoryLimit)
+  try {
+    localStorage.setItem(searchHistoryStorageKey, JSON.stringify(state.searchHistory))
+  } catch {}
+}
+
+function searchHistoryMarkup() {
+  if (!state.searchHistory.length) return ''
+  return `<section class="search-history" aria-label="搜索历史">
+    <div class="search-history-heading"><h2>搜索历史</h2><button type="button" data-clear-search-history>清空</button></div>
+    <div class="search-history-items">${state.searchHistory.map((query) => `<button type="button" data-search-history="${attr(query)}" title="再次搜索 ${attr(query)}"><span>${escapeHtml(query)}</span></button>`).join('')}</div>
+  </section>`
+}
+
 function searchEntities(items, kind) {
   if (!items.length) return ''
   const labels = { artists: '歌手', albums: '专辑', playlists: '歌单', users: '用户' }
@@ -705,7 +746,7 @@ function renderSearch(keywords = '', requestedType = state.routePayload?.type ||
   state.searchType = type
   if (!query) {
     state.pageTracks = []
-    dom.page.innerHTML = `<div class="page-inner search-page">${pageTitle('搜索')}${searchField('', true)}${searchTabs('', type)}<div class="search-empty"><div class="empty-state-inner"><div class="empty-icon">${icon('search')}</div><h2>听见你想找的</h2><p>输入关键词，然后按下 Enter。</p></div></div></div>`
+    dom.page.innerHTML = `<div class="page-inner search-page">${pageTitle('搜索')}${searchField('', true)}${searchTabs('', type)}${searchHistoryMarkup()}<div class="search-empty ${state.searchHistory.length ? 'with-history' : ''}"><div class="empty-state-inner"><div class="empty-icon">${icon('search')}</div><h2>听见你想找的</h2><p>输入关键词，然后按下 Enter。</p></div></div></div>`
     return
   }
   searchNow(query, type)
@@ -721,6 +762,7 @@ async function searchNow(query, requestedType = state.searchType || 1018) {
     renderSearch('', type)
     return
   }
+  rememberSearchQuery(query)
   state.searchType = type
   state.route = 'search'
   state.routePayload = { keywords: query, type }
@@ -1005,7 +1047,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.12.0-preview'
+  const version = '0.13.0-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1446,46 +1488,6 @@ function restorePlaybackSession() {
   return true
 }
 
-function uniqueTracks(tracks = []) {
-  const seen = new Set()
-  return tracks.filter((track) => {
-    const id = String(track?.id ?? '')
-    if (!id || seen.has(id)) return false
-    seen.add(id)
-    return true
-  })
-}
-
-function shuffleTracks(tracks = []) {
-  const shuffled = [...tracks]
-  for (let index = shuffled.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1))
-    ;[shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]]
-  }
-  return shuffled
-}
-
-function rotateTracks(tracks, startIndex) {
-  if (!tracks.length) return []
-  const index = ((startIndex % tracks.length) + tracks.length) % tracks.length
-  return [...tracks.slice(index), ...tracks.slice(0, index)]
-}
-
-function buildPlaybackQueue(source, mode, anchorTrack = null, keepAnchorFirst = false) {
-  const tracks = uniqueTracks(source)
-  if (!tracks.length) return []
-  const anchorIndex = anchorTrack
-    ? tracks.findIndex((track) => String(track.id) === String(anchorTrack.id))
-    : -1
-  const anchor = anchorIndex >= 0 ? tracks[anchorIndex] : null
-  if (mode === 'repeat-one') return [anchor || tracks[0]]
-  if (mode === 'shuffle') {
-    if (!anchor || !keepAnchorFirst) return shuffleTracks(tracks)
-    return [anchor, ...shuffleTracks(tracks.filter((_, index) => index !== anchorIndex))]
-  }
-  return tracks
-}
-
 function rebuildQueueForMode() {
   if (state.radioMode || !state.current) return
   const source = uniqueTracks(state.queueSource.length ? state.queueSource : state.queue)
@@ -1766,15 +1768,16 @@ function updateNowPlaying() {
     renderQueue()
     return
   }
+  const cover = playbackCoverUrl(track.cover)
   dom.nowCover.textContent = ''
-  dom.nowCover.style.backgroundImage = `url("${track.cover.replace(/["\\]/g, '')}")`
+  dom.nowCover.style.backgroundImage = `url("${cover.replace(/["\\]/g, '')}")`
   dom.nowCover.style.backgroundSize = 'cover'
   dom.nowTitle.textContent = track.name
   dom.nowArtist.textContent = track.artist
-  $('#immersiveCover').src = track.cover
+  $('#immersiveCover').src = cover
   $('#immersiveTitle').textContent = track.name
   $('#immersiveArtist').textContent = track.artist
-  updateImmersiveBackdrop(track.cover)
+  updateImmersiveBackdrop(cover)
   const liked = state.liked.has(track.id)
   $('#likeButton').classList.toggle('active', liked)
   $('#immersiveLike').classList.toggle('active', liked)
@@ -1786,7 +1789,7 @@ function updateNowPlaying() {
         title: track.name,
         artist: track.artist,
         album: track.album,
-        artwork: track.cover ? [{ src: track.cover }] : [],
+        artwork: cover ? [{ src: cover }] : [],
       })
     } catch (error) {
       console.warn('[media-session] Unable to publish restored metadata:', error)
@@ -2017,65 +2020,6 @@ function seekFromRange(element) {
   const maximum = Number(element.max)
   if (!(duration > 0) || !(maximum > 0)) return
   void seekCurrentTrack((Number(element.value) / maximum) * duration)
-}
-
-function lrcStampTime(stamp) {
-  const fraction = Number(`0.${String(stamp[3] || '0').padEnd(2, '0').slice(0, 3)}`)
-  return Number(stamp[1]) * 60 + Number(stamp[2]) + fraction
-}
-
-function parseLrcDocument(text) {
-  const lines = []
-  const breaks = []
-  for (const raw of String(text || '').split(/\r?\n/)) {
-    const stamps = [...raw.matchAll(/\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g)]
-    if (!stamps.length) continue
-    const content = raw.replace(/\[[^\]]+\]/g, '').trim()
-    for (const stamp of stamps) {
-      const time = lrcStampTime(stamp)
-      if (content) lines.push({ time, text: content })
-      else breaks.push(time)
-    }
-  }
-  return {
-    lines: lines.sort((a, b) => a.time - b.time),
-    breaks: [...new Set(breaks)].sort((a, b) => a - b),
-  }
-}
-
-function parseLrc(text) {
-  return parseLrcDocument(text).lines
-}
-
-function parseYrc(text) {
-  const lines = []
-  for (const raw of String(text || '').split(/\r?\n/)) {
-    const stamp = raw.match(/^\[(\d+),(\d+)\]/)
-    if (!stamp) continue
-    const content = raw.replace(/^\[\d+,\d+\]/, '').replace(/\(\d+,\d+,\d+\)/g, '').trim()
-    if (!content) continue
-    lines.push({ time: Number(stamp[1]) / 1000, duration: Number(stamp[2]) / 1000, text: content })
-  }
-  return lines.sort((a, b) => a.time - b.time)
-}
-
-function applyTimedDurations(original, timed) {
-  if (!original.length) return timed
-  if (!timed.length) return original
-  return original.map((line) => {
-    const match = timed.find((candidate) => Math.abs(candidate.time - line.time) < .28)
-    return match ? { ...line, duration: match.duration } : line
-  })
-}
-
-function mergeLyrics(original, translated, romanized) {
-  const translationMap = new Map(translated.map((line) => [Math.round(line.time * 10), line.text]))
-  const romanizedMap = new Map(romanized.map((line) => [Math.round(line.time * 10), line.text]))
-  return original.map((line) => ({
-    ...line,
-    translation: translationMap.get(Math.round(line.time * 10)) || '',
-    romanization: romanizedMap.get(Math.round(line.time * 10)) || '',
-  }))
 }
 
 async function fetchLyrics(track, generation = state.audioLoadGeneration) {
@@ -2489,7 +2433,7 @@ function smoothManualLyricScroll(delta) {
 function queueMarkup() {
   return state.queue.length ? state.queue.map((track, index) => {
     const active = index === state.queueIndex
-    return `<div class="queue-item ${active ? 'active' : ''}" data-queue-index="${index}" role="button" tabindex="0" draggable="true"${active ? ' aria-current="true"' : ''}><img src="${attr(track.cover)}" alt=""><span class="queue-item-copy"><strong>${escapeHtml(track.name)}</strong><small>${escapeHtml(track.artist)}</small></span>${active ? `<span class="queue-now">${icon('play')} 正在播放</span>` : `<span class="queue-item-time">${formatDuration(track.duration)}</span>`}<button type="button" class="queue-remove" data-queue-remove aria-label="从播放队列移除 ${attr(track.name)}" title="从队列移除">${icon('close')}</button></div>`
+    return `<div class="queue-item ${active ? 'active' : ''}" data-queue-index="${index}" role="button" tabindex="0" draggable="true"${active ? ' aria-current="true"' : ''}><img ${thumbnailAttributes(track.cover, thumbnailPixelSize(38))} alt=""><span class="queue-item-copy"><strong>${escapeHtml(track.name)}</strong><small>${escapeHtml(track.artist)}</small></span>${active ? `<span class="queue-now">${icon('play')} 正在播放</span>` : `<span class="queue-item-time">${formatDuration(track.duration)}</span>`}<button type="button" class="queue-remove" data-queue-remove aria-label="从播放队列移除 ${attr(track.name)}" title="从队列移除">${icon('close')}</button></div>`
   }).join('') : `<div class="empty-state"><div class="empty-state-inner"><p>播放队列还是空的</p></div></div>`
 }
 
@@ -2529,6 +2473,7 @@ function renderQueue(options = {}) {
     }
   }
   persistPlaybackSession()
+  preloadUpcomingCovers()
 }
 
 function clearUpcomingQueue() {
@@ -3716,6 +3661,7 @@ function bindEvents() {
 
   dom.audio.addEventListener('play', () => {
     setPlayIcons(true)
+    preloadUpcomingCovers()
     startLyricsClock()
   })
   dom.audio.addEventListener('playing', () => {
@@ -4386,6 +4332,17 @@ function bindEvents() {
 }
 
 function onPageClick(event) {
+  const searchHistory = event.target.closest('[data-search-history]')
+  if (searchHistory) {
+    return navigate('search', { keywords: searchHistory.dataset.searchHistory, type: state.searchType || 1018 })
+  }
+  const clearSearchHistory = event.target.closest('[data-clear-search-history]')
+  if (clearSearchHistory) {
+    state.searchHistory = []
+    try { localStorage.removeItem(searchHistoryStorageKey) } catch {}
+    renderSearch('', state.searchType || 1018)
+    return
+  }
   const searchType = event.target.closest('[data-search-type]')
   if (searchType) {
     const query = String(searchType.dataset.searchQuery || $('[data-page-search]', dom.page)?.value || '').trim()
@@ -4594,6 +4551,7 @@ function onPageClick(event) {
 async function init() {
   const initializationStarted = performance.now()
   installImageRetry()
+  installThumbnailLoading()
   bindEvents()
   applyDisplaySettings()
   try {

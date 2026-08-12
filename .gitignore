@@ -1,15 +1,35 @@
+# Dependencies and generated packages
 node_modules/
-dist/
 release/
+dist/
+out/
+build/
+coverage/
+
+# Local caches, logs, and temporary files
+.cache/
 .research/
-*.log
-.DS_Store
-.agents/
-.idea/
 .preview-profile*/
 .tmp-preview-profile*/
+*.log
+*.tmp
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local tools and editor state
+.agents/
+.idea/
+.vscode/
+*.code-workspace
 REQUEST/
-menoradio-*.png
-packaged-smoke-*.png
-!menoradio-home.png
-!menoradio-player-jump-v3b.png
+
+# Local design references and visual QA captures
+/ICON/
+/screenshots/
+/*.png
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini

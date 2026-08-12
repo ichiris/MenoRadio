@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, safeStorage, shell, nativeTheme, session, screen } = require('electron')
+const { app, BrowserWindow, ipcMain, safeStorage, shell, nativeTheme, session, screen, net } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const { execFile } = require('node:child_process')
@@ -22,6 +22,99 @@ let sessionProfile = null
 let authStatusMisses = 0
 let installedFontsCache = null
 let resettingApplication = false
+
+const thumbnailConcurrency = 6
+const thumbnailBytesPerSecond = 1024 * 1024
+const thumbnailMaximumBytes = 2 * 1024 * 1024
+const thumbnailCacheLimit = 420
+let thumbnailActiveRequests = 0
+let thumbnailBandwidthAvailableAt = 0
+const thumbnailWaiters = []
+const thumbnailCache = new Map()
+const thumbnailInflight = new Map()
+
+function acquireThumbnailSlot() {
+  if (thumbnailActiveRequests < thumbnailConcurrency) {
+    thumbnailActiveRequests += 1
+    return Promise.resolve()
+  }
+  return new Promise((resolve) => thumbnailWaiters.push(resolve))
+}
+
+function releaseThumbnailSlot() {
+  const next = thumbnailWaiters.shift()
+  if (next) next()
+  else thumbnailActiveRequests = Math.max(0, thumbnailActiveRequests - 1)
+}
+
+async function reserveThumbnailBandwidth(byteLength) {
+  const now = Date.now()
+  const start = Math.max(now, thumbnailBandwidthAvailableAt)
+  thumbnailBandwidthAvailableAt = start + Math.ceil((byteLength / thumbnailBytesPerSecond) * 1000)
+  const delay = thumbnailBandwidthAvailableAt - now
+  if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
+}
+
+function validateThumbnailUrl(value) {
+  const url = new URL(String(value || ''))
+  if (url.protocol !== 'https:') throw new Error('Unsupported thumbnail URL')
+  const host = url.hostname.toLowerCase()
+  if (!host.endsWith('music.126.net') && !host.endsWith('music.163.com')) throw new Error('Unsupported thumbnail host')
+  return url.toString()
+}
+
+function rememberThumbnail(url, entry) {
+  if (thumbnailCache.has(url)) thumbnailCache.delete(url)
+  thumbnailCache.set(url, entry)
+  while (thumbnailCache.size > thumbnailCacheLimit) thumbnailCache.delete(thumbnailCache.keys().next().value)
+}
+
+async function downloadThumbnail(url) {
+  await acquireThumbnailSlot()
+  try {
+    const response = await net.fetch(url, { cache: 'force-cache', referrerPolicy: 'no-referrer' })
+    if (!response.ok || !response.body) throw new Error(`Thumbnail request failed (${response.status})`)
+    const contentLength = Number(response.headers.get('content-length') || 0)
+    if (contentLength > thumbnailMaximumBytes) throw new Error('Thumbnail response is too large')
+    const reader = response.body.getReader()
+    const chunks = []
+    let total = 0
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value?.byteLength) continue
+      total += value.byteLength
+      if (total > thumbnailMaximumBytes) {
+        await reader.cancel()
+        throw new Error('Thumbnail response is too large')
+      }
+      await reserveThumbnailBandwidth(value.byteLength)
+      chunks.push(Buffer.from(value))
+    }
+    const data = Buffer.concat(chunks, total)
+    const entry = {
+      mimeType: String(response.headers.get('content-type') || 'image/jpeg').split(';')[0],
+      bytes: Uint8Array.from(data),
+    }
+    rememberThumbnail(url, entry)
+    return entry
+  } finally {
+    releaseThumbnailSlot()
+  }
+}
+
+function getThumbnail(value) {
+  const url = validateThumbnailUrl(value)
+  const cached = thumbnailCache.get(url)
+  if (cached) {
+    rememberThumbnail(url, cached)
+    return Promise.resolve(cached)
+  }
+  if (thumbnailInflight.has(url)) return thumbnailInflight.get(url)
+  const request = downloadThumbnail(url).finally(() => thumbnailInflight.delete(url))
+  thumbnailInflight.set(url, request)
+  return request
+}
 
 const isDev = process.argv.includes('--dev')
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
@@ -492,6 +585,7 @@ function createWindow() {
     height,
     minWidth: 980,
     minHeight: 680,
+    icon: path.join(__dirname, '..', 'src', 'assets', 'icon', 'app-icon.png'),
     show: false,
     frame: false,
     transparent: false,
@@ -776,6 +870,7 @@ function registerWindowIpc() {
     if (!['https:', 'http:'].includes(parsed.protocol)) throw new Error('Unsupported URL')
     return shell.openExternal(parsed.toString())
   })
+  ipcMain.handle('image:thumbnail', (_event, payload) => getThumbnail(payload?.url))
   ipcMain.handle('floating-lyrics:state', () => ({
     config: floatingLyricsState.config,
     bounds: floatingLyricsState.bounds,

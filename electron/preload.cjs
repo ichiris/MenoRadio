@@ -56,6 +56,9 @@ contextBridge.exposeInMainWorld('menoradio', {
     fonts: () => invoke('app:list-fonts'),
     openExternal: (url) => invoke('app:open-external', url),
   },
+  images: {
+    thumbnail: (url) => invoke('image:thumbnail', { url }),
+  },
   floatingLyrics: {
     state: () => invoke('floating-lyrics:state'),
     configure: (patch) => invoke('floating-lyrics:configure', patch),

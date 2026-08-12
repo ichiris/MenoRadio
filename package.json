@@ -1,6 +1,6 @@
 {
   "name": "menoradio",
-  "version": "0.12.1-preview",
+  "version": "0.13.0-preview",
   "description": "A calm, Fluent-inspired NetEase Cloud Music desktop player.",
   "main": "electron/main.cjs",
   "author": "ichiris",
@@ -17,8 +17,9 @@
     "screenshot:player:queue": "electron . --size=1600x1000 --preview=player-queue --screenshot=menoradio-player-queue-v1.png",
     "screenshot:player:radio": "electron . --size=1600x1000 --preview=player-radio --screenshot=menoradio-player-radio-v1.png",
     "screenshot:user": "electron . --size=1440x900 --preview=user --screenshot=menoradio-user-v1.png",
-    "icon": "electron electron/icon-export.cjs",
-    "check": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/floating-preload.cjs && node --check electron/icon-export.cjs && node --check src/app.js && node --check src/floating-lyrics.js",
+    "test": "node --test tests/*.test.cjs",
+    "check": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/floating-preload.cjs && node --check src/core/utils.js && node --check src/core/playback-queue.js && node --check src/core/lyrics-parser.js && node --check src/app.js && node --check src/floating-lyrics.js",
+    "validate": "npm run check && npm test",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win nsis portable"
   },
@@ -45,7 +46,7 @@
       "output": "release"
     },
     "win": {
-      "icon": "build/icon.png",
+      "icon": "src/assets/icon/app-icon.png",
       "target": [
         "nsis",
         "portable"
