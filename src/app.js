@@ -110,6 +110,8 @@ const state = {
   audioQuality: localStorage.getItem('menoradio.audioQuality') || 'best',
   audioNormalization: localStorage.getItem('menoradio.audioNormalization') === 'true',
   mediaLoadingOptimization: localStorage.getItem('menoradio.mediaLoadingOptimization') === 'true',
+  networkRateLimit: localStorage.getItem('menoradio.networkRateLimit') || '',
+  networkRateLimitTimer: 0,
   userVolume: .75,
   trackReplayGainDb: 0,
   floatingLyrics: {
@@ -512,15 +514,6 @@ function audioPreloadKey(track) {
   return `${String(track?.id || '')}:${state.audioQuality}`
 }
 
-function releaseAudioPreload(entry) {
-  const media = entry?.media
-  if (!media) return
-  media.pause()
-  media.removeAttribute('src')
-  try { media.load() } catch {}
-  entry.media = null
-}
-
 function getAudioPreload(track, warmMedia = false) {
   if (!state.mediaLoadingOptimization || !track?.id) return null
   const key = audioPreloadKey(track)
@@ -531,7 +524,7 @@ function getAudioPreload(track, warmMedia = false) {
       trackId: String(track.id),
       sourcePromise: null,
       source: null,
-      media: null,
+      warming: false,
     }
     entry.sourcePromise = bridge.data.songUrl(track.id, state.audioQuality).then((response) => {
       const body = unwrap(response)
@@ -541,20 +534,19 @@ function getAudioPreload(track, warmMedia = false) {
       return entry.source
     }).catch((error) => {
       if (upcomingAudioPreloads.get(key) === entry) upcomingAudioPreloads.delete(key)
-      releaseAudioPreload(entry)
       throw error
     })
     upcomingAudioPreloads.set(key, entry)
   }
-  if (warmMedia && !entry.media) {
+  if (warmMedia && !entry.warming) {
+    entry.warming = true
     void entry.sourcePromise.then((source) => {
-      if (upcomingAudioPreloads.get(key) !== entry || entry.media) return
-      const media = new Audio()
-      media.preload = 'auto'
-      media.src = source.url
-      entry.media = media
-      media.load()
-    }).catch(() => {})
+      if (upcomingAudioPreloads.get(key) !== entry || !state.mediaLoadingOptimization) return
+      // Warm the small cover first, then the audio body, through the same
+      // throttled lane. This avoids a second cover request at the transition.
+      const urls = [playbackCoverUrl(track.cover), source.url].filter((url) => /^https:/i.test(url))
+      return bridge.media.preloadNext(key, urls)
+    }).catch(() => {}).finally(() => { entry.warming = false })
   }
   return entry
 }
@@ -562,18 +554,21 @@ function getAudioPreload(track, warmMedia = false) {
 function trimAudioPreloads(keepKeys) {
   for (const [key, entry] of upcomingAudioPreloads) {
     if (keepKeys.has(key)) continue
-    releaseAudioPreload(entry)
     upcomingAudioPreloads.delete(key)
   }
 }
 
 function clearAudioPreloads() {
   trimAudioPreloads(new Set())
+  void bridge.media.cancelPreload().catch(() => {})
 }
 
 function cancelPendingAudioPreloadsExcept(track) {
   const keep = track?.id ? new Set([audioPreloadKey(track)]) : new Set()
   trimAudioPreloads(keep)
+  // A user-initiated/current-track load always wins. The resolved URL remains
+  // reusable, while the low-priority body prefetch yields immediately.
+  void bridge.media.cancelPreload().catch(() => {})
 }
 
 function maybePreloadUpcomingCovers() {
@@ -582,11 +577,10 @@ function maybePreloadUpcomingCovers() {
   if (dom.audio.paused || !state.current || state.queue.length < 2) return
   if (state.playingGeneration !== generation || state.coverReadyGeneration !== generation || state.lyricsReadyGeneration !== generation) return
   const index = currentQueueIndex()
-  const tracks = upcomingTracks(state.queue, index, 3)
+  const tracks = upcomingTracks(state.queue, index, 1)
   const signature = `${generation}:${tracks.map((track) => track.id).join(',')}`
   if (state.upcomingPreloadSignature === signature) return
   state.upcomingPreloadSignature = signature
-  tracks.forEach((track) => { void loadPlaybackCover(playbackCoverUrl(track.cover), 'low') })
   const keepAudioKeys = new Set([audioPreloadKey(state.current), ...tracks.map(audioPreloadKey)])
   trimAudioPreloads(keepAudioKeys)
   tracks.forEach((track) => getAudioPreload(track, true))
@@ -1246,7 +1240,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.13.5-preview'
+  const version = '0.13.6-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1260,6 +1254,7 @@ function renderSettings() {
       <section class="settings-card quality-setting-card"><div><h3>音质</h3></div>${choicePickerMarkup('audio-quality', state.audioQuality, audioQualities, '音质')}</section>
       <section class="settings-card"><div><h3>音量均衡</h3></div><label class="setting-switch" title="按歌曲的 ReplayGain 固定调整播放增益"><input type="checkbox" data-audio-normalization ${state.audioNormalization ? 'checked' : ''}><i></i></label></section>
       <section class="settings-card"><div><h3>媒体加载优化</h3></div><label class="setting-switch"><input type="checkbox" data-media-loading-optimization ${state.mediaLoadingOptimization ? 'checked' : ''}><i></i></label></section>
+      <section class="settings-card"><div><h3>网络速率限制</h3></div><label class="setting-number network-rate-limit"><input type="number" min="0.1" max="1024" step="0.1" inputmode="decimal" placeholder="不限速" value="${attr(state.networkRateLimit)}" data-network-rate-limit><span>MB/s</span></label></section>
       <button type="button" class="settings-card settings-navigation-card" data-route-link="settings-floating"><h3>悬浮歌词</h3><svg><use href="#i-chevron"/></svg></button>
       <section class="settings-card data-management-card"><div><h3>数据管理</h3></div><div class="setting-actions"><button class="secondary-button" data-clear-cache>清理缓存(<span data-cache-size>正在计算…</span>)</button><button type="button" class="secondary-button application-reset-button" data-reset-application>重置</button></div></section>
       <section class="settings-card"><div><h3>关于</h3><p>MenoRadio <span data-app-version>${escapeHtml(version)}</span> · 开发者 <button type="button" class="settings-link" data-external="https://github.com/ichiris">@ichiris</button></p></div><div class="setting-actions"><button class="secondary-button" data-external="https://github.com/ichiris/MenoRadio">项目主页 ${icon('external')}</button><button class="secondary-button" data-external="https://github.com/neteasecloudmusicapienhanced/api-enhanced">引用开源项目 ${icon('external')}</button></div></section>
@@ -1865,9 +1860,9 @@ async function ensureAudioSource(track, generation = state.audioLoadGeneration, 
   if (options.passive) state.passiveAudioGeneration = generation
   const request = (async () => {
     try {
-      // Reuse URL resolution and Chromium's partially warmed media cache when
-      // this track was one of the next three entries. Switching tracks then
-      // continues the existing request instead of starting from zero.
+      // Reuse URL resolution and Chromium's session cache when this was the
+      // prefetched next track. A completed prefetch is a cache hit; an aborted
+      // partial response is discarded so it can never compete with playback.
       const preload = getAudioPreload(track, false)
       const audioSource = preload
         ? await preload.sourcePromise
@@ -3945,10 +3940,6 @@ function bindEvents() {
   })
   dom.audio.addEventListener('seeked', startLyricsClock)
   dom.audio.addEventListener('loadedmetadata', () => {
-    // The visible player has now attached to the same URL/cache entry. Release
-    // the hidden warmer so only the current audio element continues streaming.
-    const activePreload = state.current ? upcomingAudioPreloads.get(audioPreloadKey(state.current)) : null
-    if (activePreload?.media) releaseAudioPreload(activePreload)
     applyPendingAudioSeek()
     const duration = dom.audio.duration || (state.current?.duration || 0) / 1000
     updateRange(dom.playerProgress, dom.audio.currentTime || 0, duration)
@@ -4102,6 +4093,18 @@ function bindEvents() {
       }
       return
     }
+    if (event.target.matches('[data-network-rate-limit]')) {
+      const value = event.target.value.trim()
+      const parsed = Number(value)
+      if (value && (!Number.isFinite(parsed) || parsed <= 0)) return
+      state.networkRateLimit = value
+      localStorage.setItem('menoradio.networkRateLimit', value)
+      clearTimeout(state.networkRateLimitTimer)
+      state.networkRateLimitTimer = window.setTimeout(() => {
+        void bridge.app.setNetworkRateLimit(value ? parsed : 0).catch(() => {})
+      }, 240)
+      return
+    }
     if (event.target.matches('[data-playlist-search]')) {
       refreshCurrentPlaylistTrackList()
     }
@@ -4146,6 +4149,18 @@ function bindEvents() {
       state.floatingLyrics[key] = value
       configureFloatingLyrics({ [key]: value })
     }
+  })
+  dom.page.addEventListener('change', (event) => {
+    if (!event.target.matches('[data-network-rate-limit]')) return
+    const parsed = Number(event.target.value)
+    const value = Number.isFinite(parsed) && parsed > 0
+      ? String(Math.max(.1, Math.min(1024, parsed)))
+      : ''
+    event.target.value = value
+    state.networkRateLimit = value
+    localStorage.setItem('menoradio.networkRateLimit', value)
+    clearTimeout(state.networkRateLimitTimer)
+    void bridge.app.setNetworkRateLimit(value ? Number(value) : 0).catch(() => {})
   })
   dom.page.addEventListener('pointerdown', (event) => {
     const resetFloatingLyrics = event.target.closest?.('[data-reset-floating-lyrics]')
@@ -4851,6 +4866,7 @@ async function init() {
   installThumbnailLoading()
   bindEvents()
   applyDisplaySettings()
+  await bridge.app.setNetworkRateLimit(state.networkRateLimit ? Number(state.networkRateLimit) : 0).catch(() => 0)
   try {
     const snapshot = await bridge.floatingLyrics.state()
     state.floatingLyrics = { ...state.floatingLyrics, ...(snapshot?.config || {}) }

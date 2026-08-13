@@ -34,6 +34,122 @@ const thumbnailWaiters = []
 const thumbnailCache = new Map()
 const thumbnailInflight = new Map()
 
+const mediaPreloadBytesPerSecond = 1024 * 1024
+let mediaPreloadBandwidthAvailableAt = 0
+let activeMediaPreload = null
+
+function validateMediaPreloadUrl(value) {
+  const url = new URL(String(value || ''))
+  if (url.protocol !== 'https:') throw new Error('Unsupported media preload URL')
+  const host = url.hostname.toLowerCase()
+  if (!host.endsWith('music.126.net') && !host.endsWith('music.163.com')) throw new Error('Unsupported media preload host')
+  return url.toString()
+}
+
+function mediaPreloadDelay(byteLength) {
+  const now = Date.now()
+  const start = Math.max(now, mediaPreloadBandwidthAvailableAt)
+  mediaPreloadBandwidthAvailableAt = start + Math.ceil((byteLength / mediaPreloadBytesPerSecond) * 1000)
+  return Math.max(0, mediaPreloadBandwidthAvailableAt - now)
+}
+
+function cancelMediaPreload(exceptKey = '') {
+  const task = activeMediaPreload
+  if (!task || (exceptKey && task.key === exceptKey)) return false
+  task.cancelled = true
+  clearTimeout(task.resumeTimer)
+  task.request?.abort()
+  activeMediaPreload = null
+  return true
+}
+
+function preloadMediaResource(url, task) {
+  return new Promise((resolve, reject) => {
+    if (task.cancelled) return resolve(false)
+    const request = net.request({
+      url,
+      session: session.defaultSession,
+      cache: 'force-cache',
+      priority: 'throttled',
+      priorityIncremental: true,
+      referrerPolicy: 'no-referrer',
+    })
+    task.request = request
+    const finish = (error, result = false) => {
+      clearTimeout(task.resumeTimer)
+      if (task.request === request) task.request = null
+      if (error && !task.cancelled) reject(error)
+      else resolve(result)
+    }
+    request.on('response', (response) => {
+      if (response.statusCode < 200 || response.statusCode >= 400) {
+        request.abort()
+        finish(new Error(`Media preload failed (${response.statusCode})`))
+        return
+      }
+      response.on('data', (chunk) => {
+        if (task.cancelled || !chunk?.length) return
+        response.pause()
+        task.resumeTimer = setTimeout(() => {
+          task.resumeTimer = null
+          if (!task.cancelled) response.resume()
+        }, mediaPreloadDelay(chunk.length))
+      })
+      response.on('end', () => finish(null, true))
+      response.on('aborted', () => finish(null, false))
+      response.on('error', (error) => finish(error))
+    })
+    request.on('error', (error) => finish(error))
+    request.end()
+  })
+}
+
+async function preloadNextMedia(payload = {}) {
+  const key = String(payload.key || '').slice(0, 160)
+  const urls = [...new Set((Array.isArray(payload.urls) ? payload.urls : [])
+    .map((url) => validateMediaPreloadUrl(url)))]
+    .slice(0, 2)
+  if (!key || !urls.length) return { completed: false }
+  if (activeMediaPreload?.key === key) return activeMediaPreload.promise
+  cancelMediaPreload()
+  mediaPreloadBandwidthAvailableAt = Date.now()
+  const task = { key, request: null, resumeTimer: null, cancelled: false, promise: null }
+  task.promise = (async () => {
+    try {
+      // Cover and audio share one serial 1 MB/s lane. This request starts only
+      // after the renderer confirms the current track, cover, and lyrics are ready.
+      for (const url of urls) {
+        if (task.cancelled) return { completed: false, cancelled: true }
+        await preloadMediaResource(url, task)
+      }
+      return { completed: !task.cancelled }
+    } catch (error) {
+      if (!task.cancelled) console.warn('[media-preload] Unable to warm next track:', error?.message || error)
+      return { completed: false, cancelled: task.cancelled }
+    } finally {
+      if (activeMediaPreload === task) activeMediaPreload = null
+    }
+  })()
+  activeMediaPreload = task
+  return task.promise
+}
+
+function setNetworkRateLimit(megabytesPerSecond) {
+  const value = Number(megabytesPerSecond)
+  if (!Number.isFinite(value) || value <= 0) {
+    session.defaultSession.disableNetworkEmulation()
+    return 0
+  }
+  const normalized = Math.max(.1, Math.min(1024, value))
+  session.defaultSession.enableNetworkEmulation({
+    offline: false,
+    latency: 0,
+    downloadThroughput: Math.round(normalized * 1024 * 1024),
+    uploadThroughput: 0,
+  })
+  return normalized
+}
+
 function acquireThumbnailSlot() {
   if (thumbnailActiveRequests < thumbnailConcurrency) {
     thumbnailActiveRequests += 1
@@ -882,7 +998,10 @@ function registerWindowIpc() {
     if (!['https:', 'http:'].includes(parsed.protocol)) throw new Error('Unsupported URL')
     return shell.openExternal(parsed.toString())
   })
+  ipcMain.handle('app:set-network-rate-limit', (_event, value) => setNetworkRateLimit(value))
   ipcMain.handle('image:thumbnail', (_event, payload) => getThumbnail(payload?.url, payload?.forceRefresh === true))
+  ipcMain.handle('media:preload-next', (_event, payload) => preloadNextMedia(payload))
+  ipcMain.handle('media:cancel-preload', (_event, exceptKey) => cancelMediaPreload(String(exceptKey || '')))
   ipcMain.handle('floating-lyrics:state', () => ({
     config: floatingLyricsState.config,
     bounds: floatingLyricsState.bounds,
@@ -1231,6 +1350,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  cancelMediaPreload()
   clearTimeout(floatingLyricsSaveTimer)
   clearFloatingLyricsShowTimer()
   if (!resettingApplication) writeFloatingLyricsState()

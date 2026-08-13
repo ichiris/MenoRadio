@@ -54,10 +54,15 @@ contextBridge.exposeInMainWorld('menoradio', {
     clearCache: () => invoke('app:clear-cache'),
     reset: () => invoke('app:reset'),
     fonts: () => invoke('app:list-fonts'),
+    setNetworkRateLimit: (megabytesPerSecond) => invoke('app:set-network-rate-limit', megabytesPerSecond),
     openExternal: (url) => invoke('app:open-external', url),
   },
   images: {
     thumbnail: (url, forceRefresh = false) => invoke('image:thumbnail', { url, forceRefresh }),
+  },
+  media: {
+    preloadNext: (key, urls) => invoke('media:preload-next', { key, urls }),
+    cancelPreload: (exceptKey = '') => invoke('media:cancel-preload', exceptKey),
   },
   floatingLyrics: {
     state: () => invoke('floating-lyrics:state'),
