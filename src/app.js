@@ -156,6 +156,7 @@ const state = {
   radioLoading: false,
   immersiveChromeTimer: 0,
   immersiveLayoutTimer: 0,
+  immersiveAppSuspendTimer: 0,
   immersiveViewTimer: 0,
   immersiveViewPhaseTimer: 0,
   immersiveViewGeneration: 0,
@@ -320,7 +321,7 @@ function thumbnailAttributes(source, size = 96) {
   const url = String(source || '')
   return state.mediaLoadingOptimization && isManagedThumbnailUrl(url)
     ? `src="${transparentThumbnail}" data-thumbnail-src="${attr(url)}" data-thumbnail-size="${size}" data-thumbnail-state="loading" decoding="async"`
-    : `src="${attr(url)}"`
+    : `src="${attr(url)}" decoding="async"`
 }
 
 function thumbnailPixelSize(cssPixels = 40, maximum = 160) {
@@ -1244,7 +1245,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.13.3-preview'
+  const version = '0.13.4-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -3392,6 +3393,11 @@ async function setImmersiveFullScreen(value) {
 
 function openImmersive(open = true) {
   if (open && !state.current) return
+  clearTimeout(state.immersiveAppSuspendTimer)
+  // Keep the page visible under the slide transition. Once the player covers
+  // it, skip the underlying (possibly hundreds of rows) layout tree so native
+  // window resizing only needs to lay out the immersive player.
+  if (!open) document.body.classList.remove('immersive-app-suspended')
   if (open) applyImmersiveLayout(true)
   dom.immersive.classList.toggle('open', open)
   dom.immersive.setAttribute('aria-hidden', String(!open))
@@ -3402,6 +3408,9 @@ function openImmersive(open = true) {
     if (!state.lyricsLoading && state.lyricsReadyGeneration !== generation) void fetchLyrics(state.current, generation)
     showImmersiveChrome()
     setTimeout(() => updateActiveLyric(dom.audio.currentTime, true, true), 80)
+    state.immersiveAppSuspendTimer = window.setTimeout(() => {
+      if (dom.immersive.classList.contains('open')) document.body.classList.add('immersive-app-suspended')
+    }, 660)
   }
   else {
     if (state.fullScreen) setImmersiveFullScreen(false)
@@ -4549,6 +4558,7 @@ function bindEvents() {
   })
   window.addEventListener('resize', () => {
     hideTrackMenu()
+    if (!dom.immersive.classList.contains('open')) return
     clearTimeout(state.immersiveLayoutTimer)
     state.immersiveLayoutTimer = window.setTimeout(() => applyImmersiveLayout(false), 220)
   })

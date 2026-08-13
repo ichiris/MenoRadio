@@ -54,6 +54,10 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 svg .fill, svg.fill, .fill { fill: currentColor; stroke: none; }
 
 #app { width: 100%; height: 100%; background: rgba(20, 18, 24, .74); }
+/* The immersive player fully covers the application after its entrance. Skip
+   covered descendants so a large playlist is not reflowed on every native
+   resize frame. Its full-size app box is restored before the player leaves. */
+body.immersive-app-suspended #app { content-visibility: hidden; }
 
 .initializing-screen { position: fixed; z-index: 1000; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; background: #201e24; color: rgba(255,255,255,.94); opacity: 1; transition: opacity .3s ease, visibility 0s .3s; }
 .initializing-screen.hiding { opacity: 0; visibility: hidden; pointer-events: none; }
@@ -193,7 +197,7 @@ img[data-thumbnail-state="ready"] { opacity: 1; }
 .card-subtitle { display: block; margin-top: 3px; color: var(--text-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .track-section { border-radius: 10px; overflow: hidden; background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.045); }
-.track-row { height: 58px; display: grid; grid-template-columns: 38px minmax(280px, 2.35fr) minmax(160px, 1.15fr) 60px 42px; align-items: center; gap: 10px; padding: 0 9px; border-bottom: 1px solid rgba(255,255,255,.035); color: var(--text-soft); }
+.track-row { height: 58px; display: grid; grid-template-columns: 38px minmax(280px, 2.35fr) minmax(160px, 1.15fr) 60px 42px; align-items: center; gap: 10px; padding: 0 9px; border-bottom: 1px solid rgba(255,255,255,.035); color: var(--text-soft); content-visibility: auto; contain-intrinsic-block-size: auto 58px; }
 .track-row:last-child { border-bottom: 0; }.track-row:hover { background: rgba(255,255,255,.045); }.track-row.selected { background: rgba(255,255,255,.065); outline: 1px solid rgba(255,255,255,.045); outline-offset: -1px; }.track-row.dragging { opacity: .38; }.track-row.drop-before,.track-row.drop-after { position: relative; }.track-row.drop-before::before,.track-row.drop-after::after { content:""; position:absolute; z-index:3; left:8px; right:8px; height:2px; border-radius:2px; background:var(--accent); box-shadow:0 0 9px rgba(var(--accent-rgb),.52); }.track-row.drop-before::before { top:-1px; }.track-row.drop-after::after { bottom:-1px; }
 .track-row.playing { background: rgba(var(--accent-rgb),.08); }.track-row.playing .track-name { color: var(--accent-strong); }
 .track-index { color: #69646e; text-align: center; font-size: 12px; }.track-row:hover .track-index { color: var(--text-soft); }
@@ -472,10 +476,10 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
 .immersive-player {
   position: fixed; z-index: 100; inset: 0; visibility: hidden; transform: translateY(100%);
   transition: transform .62s cubic-bezier(.16, 1, .3, 1), visibility 0s .62s;
-  overflow: hidden; background: #171a1d; -webkit-app-region: no-drag;
+  overflow: hidden; background: #171a1d; -webkit-app-region: no-drag; contain: layout paint style;
 }
 .immersive-player.open { visibility: visible; transform: translateY(0); transition-delay: 0s; }
-.immersive-backdrop { position: absolute; z-index: 0; inset: -24%; opacity: 0; background-image: var(--cover); background-size: cover; background-position: center; filter: blur(165px) saturate(1.01) brightness(.882) contrast(.98); transform: scale(1.17); transition: opacity .86s cubic-bezier(.22,.72,.18,1); will-change: opacity; }
+.immersive-backdrop { position: absolute; z-index: 0; inset: -24%; opacity: 0; background-image: var(--cover); background-size: cover; background-position: center; filter: blur(165px) saturate(1.01) brightness(.882) contrast(.98); transform: scale(1.17); transition: opacity .86s cubic-bezier(.22,.72,.18,1); will-change: opacity, transform; backface-visibility: hidden; }
 .immersive-backdrop.active { opacity: 1; }
 .immersive-player::before { content: ""; position: absolute; z-index: 1; inset: 0; pointer-events: none; background: linear-gradient(90deg, rgba(14,18,15,var(--backdrop-veil-left,.16)), rgba(14,18,16,var(--backdrop-veil-mid,.20)) 52%, rgba(12,16,14,var(--backdrop-veil-right,.24))); transition: background .45s ease; }
 .immersive-header { position: absolute; z-index: 8; inset: 0 0 auto; height: 74px; padding: 0; color: rgba(255,255,255,.82); -webkit-app-region: drag; }
