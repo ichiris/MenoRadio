@@ -1,18 +1,24 @@
 # MenoRadio
 
-MenoRadio 是一款面向 Windows 的第三方网易云音乐播放器，专注于简洁的音乐浏览、播放队列与歌词体验。它提供与 LyricEase 相似的沉浸式播放页，并支持同步歌词与翻译、悬浮歌词、歌单管理、搜索、推荐与私人漫游等功能。
+MenoRadio 是一款非官方网易云音乐客户端，界面播放页设计参考了 LyricEase，基于 Electron 框架开发。
+支持扫码登录、账号密码登录、Cookie 登录。拥有与 LyricEase 相近的播放页体验。
 
-可通过扫码、账号密码或 Cookie 登录网易云音乐；歌曲及账号功能的可用范围以网易云音乐当前提供的服务和账号权限为准。
+MenoRadio is an unofficial NetEase Cloud Music player. It borrows the playback page design from LyricEase and is built with Electron.
+Supports QR code login, account & password login, and Cookie login.
+Delivers a playback experience similar to LyricEase.
 
-## 项目信息
+## About MenoRadio
+MenoRadio does not include any features to bypass DRM, paid membership benefits or copyright restrictions.
 
-- 项目主页：[ichiris/MenoRadio](https://github.com/ichiris/MenoRadio)
-- 开发者：[@ichiris](https://github.com/ichiris)
-- 开源许可：[MIT License](./LICENSE)
-- 第三方开源组件：[THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)
+API communication relies on the MIT-licensed repository
+[NeteaseCloudMusicApiEnhanced/api-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced).
+Full third-party ownership and license information can be found in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
 
-## 服务与产品名称
+## AIGC Statement
+Codex was utilized during the development of MenoRadio.
 
-MenoRadio 是非官方第三方客户端。网易云音乐（NetEase Cloud Music）的名称、服务数据、封面、歌词及相关内容归其相应权利人所有。
+## Service and product names
 
-LyricEase 名称仅用于描述 MenoRadio 所提供的相似播放页体验。文中出现的其他服务名称、产品名称与商标归各自权利人所有。
+MenoRadio is an independent, unofficial client. It is not affiliated with or
+endorsed by NetEase Cloud Music. NetEase Cloud Music names,
+service data, cover artwork, and lyrics belong to their respective owners.

@@ -5,17 +5,30 @@ dist/
 out/
 build/
 coverage/
+tests/
 
 # Local caches, logs, and temporary files
 .cache/
 .research/
 .preview-profile*/
 .tmp-preview-profile*/
+.eslintcache
+.nyc_output/
 *.log
 *.tmp
+*.bak
+*.dmp
+*.pid
+*.swp
+*.swo
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Local environment configuration
+.env
+.env.*
+!.env.example
 
 # Local tools and editor state
 .agents/

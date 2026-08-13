@@ -84,3 +84,9 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Service and product names
+
+MenoRadio is an independent, unofficial client. It is not affiliated with or
+endorsed by NetEase Cloud Music. NetEase Cloud Music names,
+service data, cover artwork, and lyrics belong to their respective owners.
