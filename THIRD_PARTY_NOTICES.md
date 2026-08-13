@@ -1,78 +1,69 @@
 # Third-party notices
 
-MenoRadio is distributed under the MIT License. It also uses the following
-third-party components. The exact dependency graph and resolved versions are
-recorded in `package-lock.json`.
+MenoRadio is distributed under the MIT License and uses the following
+third-party open-source components.
 
 ## Runtime components
 
 ### NeteaseCloudMusicApiEnhanced API
 
-- Package: `@neteasecloudmusicapienhanced/api`
-- Version currently resolved: 4.37.0
+- Package: `@neteasecloudmusicapienhanced/api` 4.37.0
 - Project: <https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced>
 - License: MIT
-- Copyright notice in the distributed license: Copyright (c) 2013-2022 Binaryify
+- Copyright (c) 2013-2022 Binaryify
 
-This package provides the local API implementation used to communicate with
-NetEase Cloud Music. Its `LICENSE` file is retained with the packaged npm
-dependency.
+Provides the local API implementation through which MenoRadio communicates
+with NetEase Cloud Music.
 
 ### node-qrcode
 
-- Package: `qrcode`
-- Version currently resolved: 1.5.4
+- Package: `qrcode` 1.5.4
 - Project: <https://github.com/soldair/node-qrcode>
 - License: MIT
 - Copyright (c) 2012 Ryan Day
 
-This package generates login QR codes. Its `license` file is retained with the
-packaged npm dependency.
+Generates QR codes used during account sign-in.
 
 ### Electron
 
-- Package: `electron`
-- Version currently resolved: 37.10.3
+- Package: `electron` 37.10.3
 - Project: <https://www.electronjs.org/>
 - License: MIT
 - Copyright (c) Electron contributors; Copyright (c) 2013-2020 GitHub Inc.
 
-Electron includes Chromium, Node.js, and other third-party software. Packaged
-Electron distributions include the detailed upstream notices in
-`LICENSES.chromium.html` next to the runtime executable.
+Provides the desktop application runtime. Electron includes Chromium,
+Node.js, and other third-party software whose upstream notices are included
+in `LICENSES.chromium.html` with the packaged runtime.
 
 ### UnblockNeteaseMusic server library
 
-- Package: `@unblockneteasemusic/server`
-- Version currently resolved: 0.28.0
+- Package: `@unblockneteasemusic/server` 0.28.0
 - Project: <https://github.com/UnblockNeteaseMusic/server>
 - License: LGPL-3.0-only
 
-This is a transitive dependency of the NetEase Cloud Music API package.
-MenoRadio does not modify it. Its `COPYING` and `COPYING.LESSER` files are
-retained with the packaged dependency; the linked repository provides its
-corresponding source code.
+Included transitively by the NetEase Cloud Music API package. Its `COPYING`
+and `COPYING.LESSER` files accompany the packaged dependency, and its source
+code is available from the project link above.
 
 ### Other runtime dependencies
 
-The resolved runtime tree also contains permissively licensed transitive
-packages under MIT, ISC, BSD-2-Clause, BSD-3-Clause, 0BSD, and
-BlueOak-1.0.0. `node-forge` 1.4.0 is offered under BSD-3-Clause or GPL-2.0;
-MenoRadio uses it under the BSD-3-Clause option. `busboy` 1.6.0 and
-`streamsearch` 1.1.0 omit a package metadata license field but include MIT
-license files. Exact package names and versions are recorded in
-`package-lock.json`, and their license files are retained with the packaged
-npm dependencies.
+The runtime dependency tree also contains packages licensed under MIT, ISC,
+BSD-2-Clause, BSD-3-Clause, 0BSD, and BlueOak-1.0.0. `node-forge` 1.4.0 is
+used under its BSD-3-Clause option. `busboy` 1.6.0 and `streamsearch` 1.1.0
+include MIT license files. Package metadata and applicable license files are
+retained with the distributed dependencies.
 
-## Development tooling
+## Packaging component
 
-The source project uses `electron-builder` 26.15.3 (MIT, Copyright (c) 2015
-Loopline Systems) to create Windows packages. It is a development dependency
-and is not part of MenoRadio's application runtime.
+### electron-builder
 
-Transitive npm packages retain their own package metadata and license files.
-When dependencies are updated, this notice and `package-lock.json` should be
-reviewed together.
+- Package: `electron-builder` 26.15.3
+- Project: <https://www.electron.build/>
+- License: MIT
+- Copyright (c) 2015 Loopline Systems
+
+Creates the Windows application packages and installer. It is used during
+packaging and is not part of the MenoRadio application runtime.
 
 ## MIT license terms for MIT-licensed components
 
@@ -93,9 +84,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-## Service and product names
-
-MenoRadio is an independent, unofficial client. It is not affiliated with or
-endorsed by NetEase Cloud Music. NetEase Cloud Music names,
-service data, cover artwork, and lyrics belong to their respective owners.
