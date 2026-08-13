@@ -160,6 +160,7 @@ const state = {
   immersiveViewTimer: 0,
   immersiveViewPhaseTimer: 0,
   immersiveViewGeneration: 0,
+  queueDomReleaseTimer: 0,
   queueDragIndex: -1,
   queueDropIndex: -1,
   queueJustDragged: false,
@@ -1245,7 +1246,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.13.4-preview'
+  const version = '0.13.5-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -2676,6 +2677,17 @@ function queueMarkup() {
   }).join('') : `<div class="empty-state"><div class="empty-state-inner"><p>播放队列还是空的</p></div></div>`
 }
 
+function releaseClosedQueueDom(delay = 0) {
+  clearTimeout(state.queueDomReleaseTimer)
+  state.queueDomReleaseTimer = window.setTimeout(() => {
+    state.queueDomReleaseTimer = 0
+    if (!dom.queueDrawer.classList.contains('open')) dom.queueList.replaceChildren()
+    if (!(dom.immersive.classList.contains('open') && state.immersiveView === 'queue')) {
+      dom.immersiveQueueList.replaceChildren()
+    }
+  }, delay)
+}
+
 function scrollQueueToCurrent(container, behavior = 'smooth') {
   requestAnimationFrame(() => {
     const active = container?.querySelector('.queue-item.active')
@@ -2694,9 +2706,14 @@ function renderQueue(options = {}) {
   const summary = `${state.queue.length} 首歌曲`
   $('#queueSummary').textContent = summary
   $('#immersiveQueueSummary').textContent = summary
-  const markup = queueMarkup()
-  dom.queueList.innerHTML = markup
-  dom.immersiveQueueList.innerHTML = markup
+  const drawerOpen = dom.queueDrawer.classList.contains('open')
+  const immersiveQueueOpen = dom.immersive.classList.contains('open') && state.immersiveView === 'queue'
+  if (drawerOpen || immersiveQueueOpen) {
+    const markup = queueMarkup()
+    if (drawerOpen) dom.queueList.innerHTML = markup
+    if (immersiveQueueOpen) dom.immersiveQueueList.innerHTML = markup
+  }
+  releaseClosedQueueDom()
   const canClear = state.queue.length > 0
   $('#clearQueue')?.toggleAttribute('disabled', !canClear)
   $('#immersiveClearQueue')?.toggleAttribute('disabled', !canClear)
@@ -3371,6 +3388,7 @@ function setImmersiveView(view = 'lyrics') {
   state.immersiveViewTimer = window.setTimeout(() => {
     if (generation !== state.immersiveViewGeneration) return
     dom.immersive.classList.remove('view-switching', 'queue-leaving', 'lyrics-leaving')
+    if (nextView !== 'queue') releaseClosedQueueDom()
   }, 420)
   const queueOpen = nextView === 'queue'
   dom.immersiveQueuePanel.setAttribute('aria-hidden', String(!queueOpen))
@@ -3434,6 +3452,7 @@ function toggleQueue(open = !dom.queueDrawer.classList.contains('open'), options
   dom.queueDrawer.classList.toggle('open', open)
   dom.queueDrawer.setAttribute('aria-hidden', String(!open))
   if (open) renderQueue({ focusCurrent: options.focusCurrent !== false })
+  else releaseClosedQueueDom(260)
 }
 
 function updateProfileUi() {

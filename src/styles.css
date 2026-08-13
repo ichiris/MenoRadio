@@ -558,6 +558,30 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
 #playlistTrackList.playlist-drop-target { background: transparent; }
 .queue-remove { width: 32px; height: 32px; min-height: 0; }
 
+/* Long queues must not participate in every window-resize layout pass. */
+.queue-drawer,
+.immersive-queue-panel {
+  content-visibility: hidden;
+  contain: strict;
+}
+.queue-drawer.open,
+.immersive-player.queue-view .immersive-queue-panel,
+.immersive-player.queue-view.queue-leaving .immersive-queue-panel {
+  content-visibility: visible;
+}
+.queue-list,
+.immersive-queue-list {
+  contain: strict;
+}
+.queue-item {
+  content-visibility: auto;
+  contain: layout paint style;
+  contain-intrinsic-block-size: 56px;
+}
+.immersive-queue-list .queue-item {
+  contain-intrinsic-block-size: 58px;
+}
+
 .track-drag-hud { position: fixed; z-index: 240; left: 50%; top: 52px; width: min(390px, calc(100vw - 44px)); min-height: 58px; padding: 8px 12px 8px 9px; border: 1px solid var(--line-strong); border-radius: 10px; display: grid; grid-template-columns: 42px minmax(0,1fr) auto; align-items: center; gap: 10px; background: rgb(39,36,44); color: var(--text); box-shadow: 0 18px 54px rgba(0,0,0,.38); opacity: 0; visibility: hidden; transform: translate(-50%,-10px) scale(.985); transition: opacity .14s ease, transform .18s cubic-bezier(.16,1,.3,1), visibility 0s .18s; pointer-events: none; }
 body.track-dragging .track-drag-hud { opacity: 1; visibility: visible; transform: translate(-50%,0) scale(1); transition-delay: 0s; }
 .track-drag-hud.immersive { top: 64px; border-color: rgba(255,255,255,.18); background: rgba(43,48,52,.78); color: rgba(255,255,255,.94); box-shadow: 0 18px 58px rgba(0,0,0,.24); backdrop-filter: blur(28px) saturate(.9); }
