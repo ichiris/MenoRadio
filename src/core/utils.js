@@ -149,24 +149,6 @@
     return result
   }
 
-  function adaptivePlaybackBytesPerSecond(source = {}, durationMs = 0, headroomBitsPerSecond = 4_000_000) {
-    const reportedBitrate = Number(source?.br)
-    const size = Number(source?.size)
-    const durationSeconds = Number(durationMs) / 1000
-    const measuredBitrate = Number.isFinite(size) && size > 0 && Number.isFinite(durationSeconds) && durationSeconds > 0
-      ? (size * 8) / durationSeconds
-      : 0
-    const encodedBitrate = Math.max(
-      Number.isFinite(reportedBitrate) && reportedBitrate > 0 ? reportedBitrate : 0,
-      measuredBitrate,
-      320_000,
-    )
-    const headroom = Number.isFinite(Number(headroomBitsPerSecond))
-      ? Math.max(0, Number(headroomBitsPerSecond))
-      : 4_000_000
-    return Math.round(clamp((encodedBitrate + headroom) / 8, 512 * 1024, 16 * 1024 * 1024))
-  }
-
   window.MenoRadioCore = Object.assign(window.MenoRadioCore || {}, {
     clamp,
     hexToHsv,
@@ -186,6 +168,5 @@
     fontLabel,
     sizedImageUrl,
     upcomingTracks,
-    adaptivePlaybackBytesPerSecond,
   })
 })()
