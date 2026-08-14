@@ -37,6 +37,8 @@ const thumbnailInflight = new Map()
 const mediaPreloadBytesPerSecond = 1024 * 1024
 let mediaPreloadBandwidthAvailableAt = 0
 let activeMediaPreload = null
+let userNetworkRateLimitBytesPerSecond = 0
+let playbackRateLimitBytesPerSecond = 0
 
 function validateMediaPreloadUrl(value) {
   const url = new URL(String(value || ''))
@@ -134,20 +136,41 @@ async function preloadNextMedia(payload = {}) {
   return task.promise
 }
 
-function setNetworkRateLimit(megabytesPerSecond) {
-  const value = Number(megabytesPerSecond)
-  if (!Number.isFinite(value) || value <= 0) {
+function applyEffectiveNetworkRateLimit() {
+  const limits = [userNetworkRateLimitBytesPerSecond, playbackRateLimitBytesPerSecond]
+    .filter((value) => Number.isFinite(value) && value > 0)
+  if (!limits.length) {
     session.defaultSession.disableNetworkEmulation()
     return 0
   }
-  const normalized = Math.max(.1, Math.min(1024, value))
+  const bytesPerSecond = Math.round(Math.min(...limits))
   session.defaultSession.enableNetworkEmulation({
     offline: false,
     latency: 0,
-    downloadThroughput: Math.round(normalized * 1024 * 1024),
+    downloadThroughput: bytesPerSecond,
     uploadThroughput: 0,
   })
-  return normalized
+  return bytesPerSecond
+}
+
+function setNetworkRateLimit(megabytesPerSecond) {
+  const value = Number(megabytesPerSecond)
+  userNetworkRateLimitBytesPerSecond = Number.isFinite(value) && value > 0
+    ? Math.round(Math.max(.1, Math.min(1024, value)) * 1024 * 1024)
+    : 0
+  applyEffectiveNetworkRateLimit()
+  return userNetworkRateLimitBytesPerSecond > 0
+    ? userNetworkRateLimitBytesPerSecond / (1024 * 1024)
+    : 0
+}
+
+function setPlaybackRateLimit(bytesPerSecond) {
+  const value = Number(bytesPerSecond)
+  playbackRateLimitBytesPerSecond = Number.isFinite(value) && value > 0
+    ? Math.round(Math.max(128 * 1024, Math.min(64 * 1024 * 1024, value)))
+    : 0
+  applyEffectiveNetworkRateLimit()
+  return playbackRateLimitBytesPerSecond
 }
 
 function acquireThumbnailSlot() {
@@ -1002,6 +1025,7 @@ function registerWindowIpc() {
   ipcMain.handle('image:thumbnail', (_event, payload) => getThumbnail(payload?.url, payload?.forceRefresh === true))
   ipcMain.handle('media:preload-next', (_event, payload) => preloadNextMedia(payload))
   ipcMain.handle('media:cancel-preload', (_event, exceptKey) => cancelMediaPreload(String(exceptKey || '')))
+  ipcMain.handle('media:set-playback-rate-limit', (_event, value) => setPlaybackRateLimit(value))
   ipcMain.handle('floating-lyrics:state', () => ({
     config: floatingLyricsState.config,
     bounds: floatingLyricsState.bounds,

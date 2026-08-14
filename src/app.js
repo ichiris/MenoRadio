@@ -18,6 +18,7 @@ const {
   fontLabel,
   sizedImageUrl,
   upcomingTracks,
+  adaptivePlaybackBytesPerSecond,
   uniqueTracks,
   shuffleTracks,
   rotateTracks,
@@ -137,6 +138,8 @@ const state = {
   audioSourceTrackId: '',
   audioSourcePromise: null,
   audioSourcePromiseGeneration: 0,
+  currentAudioSource: null,
+  adaptivePlaybackRateLimit: 0,
   passiveAudioGeneration: 0,
   pendingSeekTime: null,
   ignoreAudioErrorsUntil: 0,
@@ -569,6 +572,19 @@ function cancelPendingAudioPreloadsExcept(track) {
   // A user-initiated/current-track load always wins. The resolved URL remains
   // reusable, while the low-priority body prefetch yields immediately.
   void bridge.media.cancelPreload().catch(() => {})
+}
+
+async function applyAdaptivePlaybackRateLimit(source = null, track = state.current, generation = state.audioLoadGeneration) {
+  if (!state.mediaLoadingOptimization || !track?.id) {
+    state.adaptivePlaybackRateLimit = 0
+    await bridge.media.setPlaybackRateLimit(0).catch(() => 0)
+    return true
+  }
+  const bytesPerSecond = adaptivePlaybackBytesPerSecond(source || {}, track?.duration || 0)
+  await bridge.media.setPlaybackRateLimit(bytesPerSecond).catch(() => 0)
+  if (generation !== state.audioLoadGeneration || String(state.current?.id || '') !== String(track?.id || '')) return false
+  state.adaptivePlaybackRateLimit = bytesPerSecond
+  return true
 }
 
 function maybePreloadUpcomingCovers() {
@@ -1240,7 +1256,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.13.6-preview'
+  const version = '0.13.7-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1820,6 +1836,7 @@ function resetAudioSource(generation = state.audioLoadGeneration, passive = fals
   state.audioSourceTrackId = ''
   state.audioSourcePromise = null
   state.audioSourcePromiseGeneration = 0
+  state.currentAudioSource = null
   state.passiveAudioGeneration = passive ? generation : 0
   state.pendingSeekTime = null
   state.ignoreAudioErrorsUntil = performance.now() + 900
@@ -1870,6 +1887,8 @@ async function ensureAudioSource(track, generation = state.audioLoadGeneration, 
       if (String(state.current?.id) !== trackId || generation !== state.audioLoadGeneration) return false
       let url = audioSource?.url
       if (!url) throw playbackError('这首歌暂时无法播放，可能需要会员或所在地区没有版权。', 'unavailable')
+      state.currentAudioSource = audioSource
+      if (!await applyAdaptivePlaybackRateLimit(audioSource, track, generation)) return false
       state.trackReplayGainDb = replayGainDb(audioSource.gain)
       applyEffectiveAudioVolume()
       url = String(url).replace(/^http:/, 'https:')
@@ -1943,6 +1962,13 @@ async function loadTrack(track, autoplay = true) {
   state.trackReplayGainDb = 0
   applyEffectiveAudioVolume()
   resetAudioSource(generation, !autoplay)
+  // Establish a conservative cap before the first cover, lyric, URL, or media
+  // request for this generation. The exact cap replaces it once size/bitrate
+  // metadata arrives; the previous track's cap otherwise stays in force.
+  if (state.mediaLoadingOptimization) {
+    const limited = await applyAdaptivePlaybackRateLimit(null, track, generation)
+    if (!limited) return
+  }
   updateRange(dom.playerProgress, 0, Math.max(1, track.duration / 1000))
   updateRange(dom.immersiveProgress, 0, Math.max(1, track.duration / 1000))
   dom.timeLabel.textContent = `0:00 / ${formatTime(track.duration / 1000)}`
@@ -2757,6 +2783,8 @@ function clearPlaybackQueue() {
   clearPersistedPlaybackSession()
   resetPlaybackFailureCycle()
   resetAudioSource(generation)
+  state.adaptivePlaybackRateLimit = 0
+  void bridge.media.setPlaybackRateLimit(0).catch(() => {})
   setPlayIcons(false)
   openImmersive(false)
   renderLyrics([], 'empty')
@@ -4086,10 +4114,13 @@ function bindEvents() {
       localStorage.setItem('menoradio.mediaLoadingOptimization', String(state.mediaLoadingOptimization))
       state.upcomingPreloadSignature = ''
       if (state.mediaLoadingOptimization) {
+        void applyAdaptivePlaybackRateLimit(state.currentAudioSource, state.current, state.audioLoadGeneration)
         maybePreloadUpcomingCovers()
       } else {
         clearCoverPreloads()
         clearAudioPreloads()
+        state.adaptivePlaybackRateLimit = 0
+        void bridge.media.setPlaybackRateLimit(0).catch(() => {})
       }
       return
     }
@@ -4867,6 +4898,7 @@ async function init() {
   bindEvents()
   applyDisplaySettings()
   await bridge.app.setNetworkRateLimit(state.networkRateLimit ? Number(state.networkRateLimit) : 0).catch(() => 0)
+  await bridge.media.setPlaybackRateLimit(0).catch(() => 0)
   try {
     const snapshot = await bridge.floatingLyrics.state()
     state.floatingLyrics = { ...state.floatingLyrics, ...(snapshot?.config || {}) }

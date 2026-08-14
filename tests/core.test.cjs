@@ -27,6 +27,12 @@ test('upcoming cover selection wraps once and excludes the current track', () =>
   assert.deepEqual(core.upcomingTracks([{ id: 1 }], 0, 3), [])
 })
 
+test('adaptive playback limit uses encoded size or bitrate plus four megabits of headroom', () => {
+  assert.equal(core.adaptivePlaybackBytesPerSecond({ br: 320000 }, 180000), 540000)
+  assert.equal(core.adaptivePlaybackBytesPerSecond({ size: 10 * 1024 * 1024 }, 200000), 552429)
+  assert.equal(core.adaptivePlaybackBytesPerSecond({}, 0), 540000)
+})
+
 test('queue construction preserves order and removes duplicate tracks', () => {
   const tracks = [{ id: 1 }, { id: 2 }, { id: 1 }, { id: 3 }]
   assert.deepEqual(core.buildPlaybackQueue(tracks, 'sequence').map(({ id }) => id), [1, 2, 3])
