@@ -96,6 +96,7 @@ const state = {
   lyricsLoading: false,
   lyricsReadyGeneration: 0,
   coverReadyGeneration: 0,
+  currentCoverLoadTimer: 0,
   playingGeneration: 0,
   upcomingPreloadSignature: '',
   activeLyric: -1,
@@ -459,13 +460,14 @@ function playbackCoverUrl(source) {
 }
 
 function loadPlaybackCover(url, priority = 'low') {
-  if (!/^https:/i.test(url)) return Promise.resolve(false)
+  if (!/^https:/i.test(url)) return Promise.resolve(null)
   const existing = upcomingCoverPreloads.get(url)
   if (existing) {
     if (priority === 'high') existing.image.fetchPriority = 'high'
     return existing.promise
   }
   const image = new Image()
+  image.crossOrigin = 'anonymous'
   image.decoding = 'async'
   image.fetchPriority = priority
   image.referrerPolicy = 'no-referrer'
@@ -476,10 +478,10 @@ function loadPlaybackCover(url, priority = 'low') {
       entry.settled = true
       resolve(loaded)
     }
-    image.onload = () => finish(true)
-    image.onerror = () => finish(false)
+    image.onload = () => finish(image)
+    image.onerror = () => finish(null)
     entry.cancel = () => {
-      finish(false)
+      finish(null)
       image.onload = null
       image.onerror = null
       image.src = transparentThumbnail
@@ -494,6 +496,26 @@ function loadPlaybackCover(url, priority = 'low') {
     upcomingCoverPreloads.delete(oldest)
   }
   return promise
+}
+
+function scheduleCurrentPlaybackCover(generation = state.audioLoadGeneration) {
+  clearTimeout(state.currentCoverLoadTimer)
+  if (!state.mediaLoadingOptimization || !state.current || dom.audio.paused) return
+  const trackId = String(state.current.id)
+  const highResolutionCover = playbackCoverUrl(state.current.cover)
+  state.currentCoverLoadTimer = window.setTimeout(() => {
+    state.currentCoverLoadTimer = 0
+    void loadPlaybackCover(highResolutionCover, 'high').then((image) => {
+      if (!image || generation !== state.audioLoadGeneration || String(state.current?.id) !== trackId) return
+      dom.nowCover.style.backgroundImage = `url("${highResolutionCover.replace(/["\\]/g, '')}")`
+      const immersiveCover = $('#immersiveCover')
+      immersiveCover.crossOrigin = 'anonymous'
+      immersiveCover.src = highResolutionCover
+      updateImmersiveBackdrop(highResolutionCover, image)
+      state.coverReadyGeneration = generation
+      maybePreloadUpcomingCovers()
+    })
+  }, 280)
 }
 
 function cancelPendingCoverPreloadsExcept(currentUrl) {
@@ -1242,7 +1264,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.13.9-preview'
+  const version = '0.13.10-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1648,6 +1670,8 @@ function restorePlaybackSession() {
   state.lyricsLoading = false
   state.lyricsReadyGeneration = 0
   state.coverReadyGeneration = 0
+  clearTimeout(state.currentCoverLoadTimer)
+  state.currentCoverLoadTimer = 0
   state.playingGeneration = 0
   state.upcomingPreloadSignature = ''
   state.audioSourceTrackId = ''
@@ -1829,6 +1853,7 @@ function resetAudioSource(generation = state.audioLoadGeneration, passive = fals
   dom.audio.pause()
   dom.audio.removeAttribute('src')
   try { dom.audio.load() } catch {}
+  void bridge.media.cancelPlayback().catch(() => {})
   try { dom.audio.currentTime = 0 } catch {}
 }
 
@@ -1876,8 +1901,19 @@ async function ensureAudioSource(track, generation = state.audioLoadGeneration, 
       state.trackReplayGainDb = replayGainDb(audioSource.gain)
       applyEffectiveAudioVolume()
       url = String(url).replace(/^http:/, 'https:')
-      // Stop any low-priority cover warm-up before current playback begins.
-      await bridge.media.cancelPreload().catch(() => false)
+      if (state.mediaLoadingOptimization) {
+        // The main process cancels obsolete low-priority work before returning
+        // this bounded Range source, so current playback never waits behind it.
+        url = await bridge.media.playbackUrl(url, {
+          size: audioSource.size,
+          br: audioSource.br,
+          time: audioSource.time,
+          duration: track.duration,
+        })
+      } else {
+        void bridge.media.cancelPreload().catch(() => {})
+        void bridge.media.cancelPlayback().catch(() => {})
+      }
       if (String(state.current?.id) !== trackId || generation !== state.audioLoadGeneration) return false
       state.ignoreAudioErrorsUntil = performance.now() + 900
       state.audioSourceTrackId = trackId
@@ -1983,23 +2019,19 @@ function updateNowPlaying(options = {}) {
     return
   }
   const passive = Boolean(options.passive)
-  const cover = passive && state.mediaLoadingOptimization
-    ? sizedImageUrl(track.cover, thumbnailPixelSize(64))
+  const cover = state.mediaLoadingOptimization
+    ? sizedImageUrl(track.cover, passive ? thumbnailPixelSize(64) : 512)
     : playbackCoverUrl(track.cover)
   const generation = state.audioLoadGeneration
-  if (!passive && state.mediaLoadingOptimization) {
-    void loadPlaybackCover(cover, 'high').then(() => {
-      if (generation !== state.audioLoadGeneration || String(state.current?.id) !== String(track.id)) return
-      state.coverReadyGeneration = generation
-      maybePreloadUpcomingCovers()
-    })
-  }
+  if (!passive && !state.mediaLoadingOptimization) state.coverReadyGeneration = generation
   dom.nowCover.textContent = ''
   dom.nowCover.style.backgroundImage = `url("${cover.replace(/["\\]/g, '')}")`
   dom.nowCover.style.backgroundSize = 'cover'
   dom.nowTitle.textContent = track.name
   dom.nowArtist.textContent = track.artist
-  $('#immersiveCover').src = cover
+  const immersiveCover = $('#immersiveCover')
+  immersiveCover.crossOrigin = 'anonymous'
+  immersiveCover.src = cover
   $('#immersiveTitle').textContent = track.name
   $('#immersiveArtist').textContent = track.artist
   if (!passive) updateImmersiveBackdrop(cover)
@@ -2033,7 +2065,7 @@ function updateLikeButtonsOnly() {
   }
 }
 
-function updateImmersiveBackdrop(url) {
+function updateImmersiveBackdrop(url, decodedImage = null) {
   if (!url || state.backdropUrl === url) return
   state.backdropUrl = url
   const generation = ++state.backdropGeneration
@@ -2056,14 +2088,14 @@ function updateImmersiveBackdrop(url) {
       if (current && !current.classList.contains('active')) current.style.removeProperty('--cover')
     }, 1100)
   }
-  image.onload = () => {
+  const processImage = (sourceImage) => {
     if (generation !== state.backdropGeneration) return
     try {
       const canvas = document.createElement('canvas')
       canvas.width = 28
       canvas.height = 28
       const context = canvas.getContext('2d', { willReadFrequently: true })
-      context.drawImage(image, 0, 0, canvas.width, canvas.height)
+      context.drawImage(sourceImage, 0, 0, canvas.width, canvas.height)
       const pixels = context.getImageData(0, 0, canvas.width, canvas.height)
       const values = pixels.data
       const smoothstep = (start, end, value) => {
@@ -2109,10 +2141,15 @@ function updateImmersiveBackdrop(url) {
       reveal(url)
     }
   }
+  image.onload = () => processImage(image)
   image.onerror = () => {
     if (generation === state.backdropGeneration) state.backdropUrl = ''
   }
-  image.src = url
+  if (decodedImage?.naturalWidth > 0) {
+    processImage(decodedImage)
+  } else {
+    image.src = url
+  }
 }
 
 function refreshPlayingRows() {
@@ -3936,6 +3973,7 @@ function bindEvents() {
   dom.audio.addEventListener('playing', () => {
     resetPlaybackFailureCycle()
     state.playingGeneration = state.audioLoadGeneration
+    scheduleCurrentPlaybackCover()
     maybePreloadUpcomingCovers()
     startLyricsClock()
   })

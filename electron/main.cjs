@@ -1,9 +1,28 @@
-const { app, BrowserWindow, ipcMain, safeStorage, shell, nativeTheme, session, screen, net } = require('electron')
+const { app, BrowserWindow, ipcMain, safeStorage, shell, nativeTheme, session, screen, net, protocol } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
+const crypto = require('node:crypto')
 const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
 const QRCode = require('qrcode')
+const {
+  DEFAULT_SEGMENT_BYTES,
+  playbackBytesPerSecond,
+  boundedByteRange,
+  parseContentRange,
+} = require('./playback-stream.cjs')
+
+const playbackProtocolScheme = 'menoradio-media'
+protocol.registerSchemesAsPrivileged([{
+  scheme: playbackProtocolScheme,
+  privileges: {
+    standard: true,
+    secure: true,
+    stream: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+  },
+}])
 
 const execFileAsync = promisify(execFile)
 
@@ -38,6 +57,232 @@ const mediaPreloadBytesPerSecond = 1024 * 1024
 let mediaPreloadBandwidthAvailableAt = 0
 let activeMediaPreload = null
 let userNetworkRateLimitBytesPerSecond = 0
+let playbackMediaSource = null
+
+function cancelPlaybackMediaSource() {
+  const source = playbackMediaSource
+  if (!source) return false
+  source.cancelled = true
+  for (const controller of source.controllers) controller.abort()
+  source.controllers.clear()
+  source.cache.clear()
+  playbackMediaSource = null
+  return true
+}
+
+function playbackSourceUrl(payload = {}) {
+  cancelMediaPreload()
+  cancelPlaybackMediaSource()
+  const url = validateMediaPreloadUrl(payload.url)
+  const token = crypto.randomUUID()
+  playbackMediaSource = {
+    token,
+    url,
+    size: Math.max(0, Number(payload.size) || 0),
+    bytesPerSecond: playbackBytesPerSecond(payload, payload),
+    availableAt: Date.now(),
+    lastEnd: -1,
+    cancelled: false,
+    controllers: new Set(),
+    cache: new Map(),
+    queue: Promise.resolve(),
+  }
+  return `${playbackProtocolScheme}://playback/${token}`
+}
+
+function waitForPlaybackTurn(delay, source) {
+  if (!(delay > 0)) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, delay)
+    const interval = setInterval(() => {
+      if (!source.cancelled) return
+      clearTimeout(timer)
+      clearInterval(interval)
+      reject(new Error('Playback source cancelled'))
+    }, Math.min(80, delay))
+    timer.unref?.()
+    interval.unref?.()
+    setTimeout(() => clearInterval(interval), delay + 10).unref?.()
+  })
+}
+
+function rememberPlaybackSegment(source, key, value) {
+  source.cache.set(key, value)
+  while (source.cache.size > 4) source.cache.delete(source.cache.keys().next().value)
+}
+
+async function readBoundedPlaybackSegment(source, request) {
+  if (source.cancelled) throw new Error('Playback source cancelled')
+  const requestedHeader = request.headers.get('range') || 'bytes=0-'
+  const bounded = boundedByteRange(requestedHeader, source.size, DEFAULT_SEGMENT_BYTES)
+  if (source.size > 0 && bounded.start >= source.size) {
+    return new Response(null, {
+      status: 416,
+      headers: { 'Content-Range': `bytes */${source.size}`, 'Accept-Ranges': 'bytes' },
+    })
+  }
+  const cacheKey = bounded.header
+  const cached = source.cache.get(cacheKey)
+  if (cached) return new Response(cached.buffer.slice(0), { status: 206, headers: cached.headers })
+
+  // A media element may ask for the next byte range before it has completely
+  // consumed the previous response. Keep one upstream body active at a time;
+  // otherwise two individually bounded ranges can still form a short spike.
+  if (source.streamDone) await source.streamDone.catch(() => {})
+  if (source.cancelled) throw new Error('Playback source cancelled')
+
+  const sequential = bounded.start === source.lastEnd + 1
+  if (!sequential) source.availableAt = Date.now()
+  const delay = Math.max(0, source.availableAt - Date.now())
+  await waitForPlaybackTurn(delay, source)
+  if (source.cancelled) throw new Error('Playback source cancelled')
+
+  const controller = new AbortController()
+  const abortUpstream = () => controller.abort(request.signal?.reason)
+  if (request.signal?.aborted) throw new Error('Playback request cancelled')
+  request.signal?.addEventListener('abort', abortUpstream, { once: true })
+  source.controllers.add(controller)
+  try {
+    const upstream = await net.fetch(source.url, {
+      method: 'GET',
+      headers: {
+        Range: bounded.header,
+        'Accept-Encoding': 'identity',
+      },
+      cache: 'no-store',
+      signal: controller.signal,
+      bypassCustomProtocolHandlers: true,
+    })
+    if (![200, 206].includes(upstream.status) || !upstream.body) {
+      throw new Error(`Playback media request failed (${upstream.status})`)
+    }
+    const upstreamRange = parseContentRange(upstream.headers.get('content-range'))
+    if (bounded.start > 0 && upstream.status !== 206) {
+      await upstream.body.cancel().catch(() => {})
+      throw new Error('Playback server ignored a seek range')
+    }
+    const total = source.size
+      || upstreamRange?.total
+      || Number(upstream.headers.get('content-length'))
+      || (bounded.end + 1)
+    if (!source.size && total > 0) source.size = total
+    const upstreamLength = upstreamRange
+      ? upstreamRange.end - upstreamRange.start + 1
+      : Number(upstream.headers.get('content-length')) || bounded.length
+    const responseLength = Math.max(1, Math.min(bounded.length, upstreamLength))
+    const actualEnd = bounded.start + responseLength - 1
+    const headers = {
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'no-store',
+      'Content-Length': String(responseLength),
+      'Content-Range': `bytes ${bounded.start}-${actualEnd}/${Math.max(total, actualEnd + 1)}`,
+      'Content-Type': upstream.headers.get('content-type') || 'audio/mpeg',
+    }
+    const reader = upstream.body.getReader()
+    const chunks = []
+    let received = 0
+    let streamFinished = false
+    let resolveStream
+    source.streamDone = new Promise((resolve) => { resolveStream = resolve })
+
+    const finishStream = async (cacheCompleted = false) => {
+      if (streamFinished) return
+      streamFinished = true
+      if (cacheCompleted && received === responseLength) {
+        const body = Buffer.concat(chunks, received)
+        rememberPlaybackSegment(source, cacheKey, { buffer: body, headers })
+        source.lastEnd = bounded.start + received - 1
+      }
+      source.controllers.delete(controller)
+      request.signal?.removeEventListener('abort', abortUpstream)
+      resolveStream?.()
+    }
+
+    const body = new ReadableStream({
+      async pull(streamController) {
+        try {
+          if (source.cancelled || request.signal?.aborted) throw new Error('Playback request cancelled')
+          if (received >= responseLength) {
+            streamController.close()
+            await reader.cancel().catch(() => {})
+            await finishStream(true)
+            return
+          }
+
+          // Deliver the first network chunk immediately so play() is not held
+          // behind a complete segment download. Subsequent pulls are paced by
+          // the current track's own bitrate plus a small playback headroom.
+          const chunkDelay = Math.max(0, source.availableAt - Date.now())
+          await waitForPlaybackTurn(chunkDelay, source)
+          const { done, value } = await reader.read()
+          if (done) {
+            streamController.close()
+            await finishStream(received === responseLength)
+            return
+          }
+          if (!value?.byteLength) return
+          const remaining = responseLength - received
+          const chunk = value.byteLength > remaining ? value.subarray(0, remaining) : value
+          chunks.push(Buffer.from(chunk))
+          received += chunk.byteLength
+          source.availableAt = Math.max(Date.now(), source.availableAt)
+            + Math.ceil((chunk.byteLength / source.bytesPerSecond) * 1000)
+          streamController.enqueue(chunk)
+          if (received >= responseLength) {
+            streamController.close()
+            await reader.cancel().catch(() => {})
+            await finishStream(true)
+          }
+        } catch (error) {
+          streamController.error(error)
+          await reader.cancel(error).catch(() => {})
+          await finishStream(false)
+        }
+      },
+      async cancel(reason) {
+        controller.abort(reason)
+        await reader.cancel(reason).catch(() => {})
+        await finishStream(false)
+      },
+    })
+    return new Response(body, { status: 206, headers })
+  } catch (error) {
+    source.controllers.delete(controller)
+    request.signal?.removeEventListener('abort', abortUpstream)
+    throw error
+  }
+}
+
+function registerPlaybackProtocol() {
+  protocol.handle(playbackProtocolScheme, (request) => {
+    const parsed = new URL(request.url)
+    const token = parsed.pathname.replace(/^\//, '')
+    const source = playbackMediaSource
+    if (!source || source.cancelled || parsed.hostname !== 'playback' || token !== source.token) {
+      return new Response(null, { status: 404 })
+    }
+    if (request.method === 'HEAD') {
+      return new Response(null, {
+        status: 200,
+        headers: {
+          'Accept-Ranges': 'bytes',
+          ...(source.size > 0 ? { 'Content-Length': String(source.size) } : {}),
+        },
+      })
+    }
+    const task = source.queue
+      .catch(() => {})
+      .then(() => readBoundedPlaybackSegment(source, request))
+      .catch((error) => {
+        if (!source.cancelled && !request.signal?.aborted) {
+          console.warn('[playback-range] Unable to read audio segment:', error?.message || error)
+        }
+        return new Response(null, { status: source.cancelled || request.signal?.aborted ? 499 : 502 })
+      })
+    source.queue = task.then(() => {})
+    return task
+  })
+}
 
 function validateMediaPreloadUrl(value) {
   const url = new URL(String(value || ''))
@@ -1013,6 +1258,8 @@ function registerWindowIpc() {
   ipcMain.handle('image:thumbnail', (_event, payload) => getThumbnail(payload?.url, payload?.forceRefresh === true))
   ipcMain.handle('media:preload-next', (_event, payload) => preloadNextMedia(payload))
   ipcMain.handle('media:cancel-preload', (_event, exceptKey) => cancelMediaPreload(String(exceptKey || '')))
+  ipcMain.handle('media:playback-url', (_event, payload) => playbackSourceUrl(payload))
+  ipcMain.handle('media:cancel-playback', () => cancelPlaybackMediaSource())
   ipcMain.handle('floating-lyrics:state', () => ({
     config: floatingLyricsState.config,
     bounds: floatingLyricsState.bounds,
@@ -1287,16 +1534,15 @@ function registerDataIpc() {
     const requested = String(payload?.level || 'best')
     const supported = new Set(['best', 'standard', 'higher', 'exhigh', 'lossless', 'hires', 'jyeffect', 'sky', 'dolby', 'jymaster'])
     const level = supported.has(requested) ? requested : 'best'
-    const candidates = level === 'best'
-      ? ['jymaster', 'dolby', 'sky', 'jyeffect', 'hires', 'lossless', 'exhigh', 'higher', 'standard']
-      : [level]
-    for (const candidate of candidates) {
-      try {
-        const body = await callApi('song_url_v1', { id, level: candidate })
-        if (body.data?.[0]?.url) return { ...body, requestedLevel: level }
-      } catch {}
-    }
-    return callApi('song_url', { id, br: 320000 })
+    // song_url_v1 already negotiates the highest level the account and track
+    // can use. Probing every quality serially made the Play button wait for up
+    // to nine API round trips before the browser could request one audio byte.
+    try {
+      const body = await callApi('song_url_v1', { id, level: level === 'best' ? 'jymaster' : level })
+      if (body.data?.[0]?.url) return { ...body, requestedLevel: level }
+    } catch {}
+    const body = await callApi('song_url', { id, br: 320000 })
+    return { ...body, requestedLevel: level }
   }))
 
   ipcMain.handle('data:personal-fm', () => guarded(() => callApi('personal_fm')))
@@ -1349,6 +1595,7 @@ if (hasSingleInstanceLock) {
   app.whenReady().then(() => {
     loadSession()
     loadFloatingLyricsState()
+    registerPlaybackProtocol()
     registerWindowIpc()
     registerAuthIpc()
     registerDataIpc()
@@ -1362,6 +1609,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   cancelMediaPreload()
+  cancelPlaybackMediaSource()
   clearTimeout(floatingLyricsSaveTimer)
   clearFloatingLyricsShowTimer()
   if (!resettingApplication) writeFloatingLyricsState()

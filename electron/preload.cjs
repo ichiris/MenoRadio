@@ -63,6 +63,8 @@ contextBridge.exposeInMainWorld('menoradio', {
   media: {
     preloadNext: (key, urls) => invoke('media:preload-next', { key, urls }),
     cancelPreload: (exceptKey = '') => invoke('media:cancel-preload', exceptKey),
+    playbackUrl: (url, metadata = {}) => invoke('media:playback-url', { url, ...metadata }),
+    cancelPlayback: () => invoke('media:cancel-playback'),
   },
   floatingLyrics: {
     state: () => invoke('floating-lyrics:state'),
