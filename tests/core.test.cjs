@@ -30,7 +30,7 @@ test('upcoming cover selection wraps once and excludes the current track', () =>
 test('queue construction preserves order and removes duplicate tracks', () => {
   const tracks = [{ id: 1 }, { id: 2 }, { id: 1 }, { id: 3 }]
   assert.deepEqual(core.buildPlaybackQueue(tracks, 'sequence').map(({ id }) => id), [1, 2, 3])
-  assert.deepEqual(core.buildPlaybackQueue(tracks, 'repeat-one', tracks[1]).map(({ id }) => id), [2])
+  assert.deepEqual(core.buildPlaybackQueue(tracks, 'repeat-one', tracks[1]).map(({ id }) => id), [1, 2, 3])
   assert.deepEqual(core.rotateTracks(core.uniqueTracks(tracks), 1).map(({ id }) => id), [2, 3, 1])
 
   const shuffled = core.buildPlaybackQueue(tracks, 'shuffle', tracks[1], true)
@@ -45,6 +45,15 @@ test('LRC parser keeps explicit instrumental breaks', () => {
     { time: 12.5, text: '第二句' },
   ])
   assert.deepEqual(parsed.breaks, [10])
+})
+
+test('lyrics parsers discard production credits without turning them into instrumental breaks', () => {
+  const parsed = core.parseLrcDocument('[00:01.00]作曲：yanaginagi\n[00:02.00]编曲：binaria\n[00:03.00]作词：Annabel\n[00:04.00]動き出す 身体の奥には')
+  assert.deepEqual(parsed.lines, [{ time: 4, text: '動き出す 身体の奥には' }])
+  assert.deepEqual(parsed.breaks, [])
+  assert.deepEqual(core.parseYrc('[1000,800](1000,800,0)Composer: yanaginagi\n[2000,900](2000,900,0)動き出す'), [
+    { time: 2, duration: .9, text: '動き出す' },
+  ])
 })
 
 test('timed and translated lyrics merge by timestamp without mutating text', () => {

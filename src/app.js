@@ -143,6 +143,7 @@ const state = {
   playbackBufferLastAt: 0,
   passiveAudioGeneration: 0,
   pendingSeekTime: null,
+  pendingSeekApplied: false,
   ignoreAudioErrorsUntil: 0,
   manualLyricFrame: 0,
   manualLyricTarget: 0,
@@ -1269,7 +1270,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.13.14-preview'
+  const version = '0.13.15-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1412,7 +1413,7 @@ async function renderRoute() {
     case 'playlist': return renderPlaylist(state.routePayload)
     case 'user': return renderUser(state.routePayload)
     case 'recent':
-      dom.page.innerHTML = `<div class="page-inner">${pageTitle('最近播放', state.recent.length ? `最近听过的 ${state.recent.length} 首歌` : '还没有播放记录')}${renderTrackTable(state.recent, { emptyDescription: '播放过的歌曲会出现在这里。' })}</div>`
+      dom.page.innerHTML = `<div class="page-inner">${pageTitle('最近播放', state.recent.length ? `最近听过的 ${state.recent.length} 首歌` : '还没有播放记录', state.recent.length ? '<button type="button" class="secondary-button" data-clear-recent>清空</button>' : '')}${renderTrackTable(state.recent, { emptyDescription: '播放过的歌曲会出现在这里。' })}</div>`
       return
     case 'settings': return renderSettings()
     case 'settings-floating': return renderFloatingLyricsSettings()
@@ -1656,6 +1657,10 @@ function restorePlaybackSession() {
     clearPersistedPlaybackSession()
     return false
   }
+  // Versions before 0.13.15 represented repeat-one as a one-item queue. Heal
+  // those persisted sessions once so upgrading does not strand the user with
+  // an invisible single-song queue.
+  if (state.playMode === 'repeat-one' && queue.length === 1 && source.length > 1) queue = [...source]
   let queueIndex = queue.findIndex((track) => String(track.id) === String(snapshot.currentId || ''))
   if (queueIndex < 0 && Number.isInteger(snapshot.queueIndex)) {
     queueIndex = Math.max(0, Math.min(queue.length - 1, snapshot.queueIndex))
@@ -1683,6 +1688,7 @@ function restorePlaybackSession() {
   state.audioSourcePromiseGeneration = 0
   state.passiveAudioGeneration = generation
   state.pendingSeekTime = null
+  state.pendingSeekApplied = false
   dom.audio.pause()
   dom.audio.removeAttribute('src')
   try { dom.audio.load() } catch {}
@@ -1714,6 +1720,11 @@ function restorePlaybackSession() {
 
 function rebuildQueueForMode() {
   if (state.radioMode || !state.current) return
+  if (state.playMode === 'repeat-one') {
+    state.queueIndex = Math.max(0, currentQueueIndex())
+    renderQueue()
+    return
+  }
   const source = uniqueTracks(state.queueSource.length ? state.queueSource : state.queue)
   if (!source.some((track) => String(track.id) === String(state.current.id))) source.unshift(state.current)
   state.queueSource = source
@@ -1897,6 +1908,7 @@ function resetAudioSource(generation = state.audioLoadGeneration, passive = fals
   state.playbackProxyFallbackGeneration = 0
   state.passiveAudioGeneration = passive ? generation : 0
   state.pendingSeekTime = null
+  state.pendingSeekApplied = false
   state.ignoreAudioErrorsUntil = performance.now() + 900
   if (state.playbackBufferReportTimer) window.clearTimeout(state.playbackBufferReportTimer)
   state.playbackBufferReportTimer = 0
@@ -1910,17 +1922,34 @@ function resetAudioSource(generation = state.audioLoadGeneration, passive = fals
 
 function applyPendingAudioSeek() {
   if (!Number.isFinite(state.pendingSeekTime) || !dom.audio.src || dom.audio.readyState < 1) return false
+  if (state.pendingSeekApplied) return true
   const duration = Number.isFinite(dom.audio.duration) && dom.audio.duration > 0
     ? dom.audio.duration
     : Math.max(0, Number(state.current?.duration || 0) / 1000)
   const target = Math.max(0, duration > 0 ? Math.min(duration, state.pendingSeekTime) : state.pendingSeekTime)
   try {
+    // Keep the requested time authoritative until the media element confirms
+    // the seek. A restored, paused source can emit a transient 0-second update
+    // between load() and seeked; clearing here made lyrics visibly jump back.
+    state.pendingSeekApplied = true
     dom.audio.currentTime = target
-    state.pendingSeekTime = null
     return true
   } catch {
+    state.pendingSeekApplied = false
     return false
   }
+}
+
+function playbackClockTime() {
+  return Number.isFinite(state.pendingSeekTime) ? state.pendingSeekTime : (dom.audio.currentTime || 0)
+}
+
+function finishPendingAudioSeek() {
+  if (!Number.isFinite(state.pendingSeekTime) || !state.pendingSeekApplied) return false
+  if (Math.abs((dom.audio.currentTime || 0) - state.pendingSeekTime) > .35) return false
+  state.pendingSeekTime = null
+  state.pendingSeekApplied = false
+  return true
 }
 
 async function ensureAudioSource(track, generation = state.audioLoadGeneration, options = {}) {
@@ -2001,6 +2030,7 @@ async function seekCurrentTrack(seconds) {
     : Math.max(0, Number(state.current.duration || 0) / 1000)
   const target = Math.max(0, duration > 0 ? Math.min(duration, seconds) : seconds)
   state.pendingSeekTime = target
+  state.pendingSeekApplied = false
   updateRange(dom.playerProgress, target, Math.max(1, duration))
   updateRange(dom.immersiveProgress, target, Math.max(1, duration))
   dom.timeLabel.textContent = `${formatTime(target)} / ${formatTime(duration)}`
@@ -2407,7 +2437,7 @@ function renderLyrics(lines, status = 'ready') {
   dom.lyricsScroller.innerHTML = lines.map((line, index) => `<div class="lyric-line" data-lyric-index="${index}" data-time="${line.time}"><div class="lyric-content"><div class="lyric-original">${escapeHtml(line.text)}</div>${line.translation ? `<div class="lyric-translation translation">${escapeHtml(line.translation)}</div>` : ''}</div></div>`).join('')
   updateLyricVisibility()
   requestAnimationFrame(() => {
-    updateActiveLyric(dom.audio.currentTime || 0, true, true)
+    updateActiveLyric(playbackClockTime(), true, true)
     startLyricsClock()
   })
 }
@@ -2435,7 +2465,7 @@ function syncFloatingLyrics(force = false) {
 }
 
 function syncLyricsToPlaybackClock(force = false) {
-  const current = dom.audio.currentTime || 0
+  const current = playbackClockTime()
   if (state.lyrics.length) updateActiveLyric(current)
   syncFloatingLyrics(force)
   return current
@@ -2732,7 +2762,7 @@ function setManualLyricReadability(readable, scheduleReset = true) {
   if (readable && scheduleReset) {
     state.manualLyricReadableTimer = window.setTimeout(() => {
       setManualLyricReadability(false, false)
-      updateActiveLyric(dom.audio.currentTime || 0, false, true)
+      updateActiveLyric(playbackClockTime(), false, true)
     }, 5000)
   }
 }
@@ -3290,17 +3320,15 @@ function queueTrackNext(track) {
     return
   }
   if (!state.queueSource.some((item) => String(item.id) === String(track.id))) state.queueSource.push(track)
-  if (state.playMode !== 'repeat-one') {
-    const currentIndex = currentQueueIndex()
-    const existingIndex = state.queue.findIndex((item, index) => String(item.id) === String(track.id) && index !== currentIndex)
-    if (existingIndex >= 0) {
-      state.queue.splice(existingIndex, 1)
-      if (existingIndex < currentIndex) state.queueIndex -= 1
-    }
-    const anchor = Math.max(0, currentQueueIndex())
-    state.queue.splice(Math.min(anchor + 1, state.queue.length), 0, track)
-    state.queueIndex = anchor
+  const currentIndex = currentQueueIndex()
+  const existingIndex = state.queue.findIndex((item, index) => String(item.id) === String(track.id) && index !== currentIndex)
+  if (existingIndex >= 0) {
+    state.queue.splice(existingIndex, 1)
+    if (existingIndex < currentIndex) state.queueIndex -= 1
   }
+  const anchor = Math.max(0, currentQueueIndex())
+  state.queue.splice(Math.min(anchor + 1, state.queue.length), 0, track)
+  state.queueIndex = anchor
   renderQueue()
   toast(`接下来播放：${track.name}`)
 }
@@ -3451,7 +3479,7 @@ function applyImmersiveLayout(immediate = false) {
   content.style.setProperty('--content-shift', `${compactShift}px`)
   content.style.setProperty('--content-height', `${Math.max(0, height - 74)}px`)
   if (immediate) requestAnimationFrame(() => content.classList.remove('layout-instant'))
-  window.setTimeout(() => updateActiveLyric(dom.audio.currentTime || 0, true, true), immediate ? 20 : 540)
+  window.setTimeout(() => updateActiveLyric(playbackClockTime(), true, true), immediate ? 20 : 540)
 }
 
 function showImmersiveChrome() {
@@ -3516,7 +3544,7 @@ function openImmersive(open = true) {
     if (state.coverReadyGeneration !== generation) updateNowPlaying()
     if (!state.lyricsLoading && state.lyricsReadyGeneration !== generation) void fetchLyrics(state.current, generation)
     showImmersiveChrome()
-    setTimeout(() => updateActiveLyric(dom.audio.currentTime, true, true), 80)
+    setTimeout(() => updateActiveLyric(playbackClockTime(), true, true), 80)
     state.immersiveAppSuspendTimer = window.setTimeout(() => {
       if (dom.immersive.classList.contains('open')) document.body.classList.add('immersive-app-suspended')
     }, 660)
@@ -4016,7 +4044,7 @@ function bindEvents() {
     applyDisplaySettings()
     $('#fontSizeMenu').classList.remove('open')
     $('#fontSizeMenu').setAttribute('aria-hidden', 'true')
-    requestAnimationFrame(() => updateActiveLyric(dom.audio.currentTime, true, true))
+    requestAnimationFrame(() => updateActiveLyric(playbackClockTime(), true, true))
   })
 
   dom.audio.addEventListener('play', () => {
@@ -4045,7 +4073,9 @@ function bindEvents() {
   dom.audio.addEventListener('waiting', () => reportPlaybackBuffer(true))
   dom.audio.addEventListener('seeking', () => reportPlaybackBuffer(true))
   dom.audio.addEventListener('seeked', () => {
+    const completedPendingSeek = finishPendingAudioSeek()
     reportPlaybackBuffer(true)
+    if (completedPendingSeek) updateActiveLyric(dom.audio.currentTime || 0, false, true)
     startLyricsClock()
   })
   dom.audio.addEventListener('progress', () => reportPlaybackBuffer())
@@ -4053,14 +4083,16 @@ function bindEvents() {
     applyPendingAudioSeek()
     reportPlaybackBuffer(true)
     const duration = dom.audio.duration || (state.current?.duration || 0) / 1000
-    updateRange(dom.playerProgress, dom.audio.currentTime || 0, duration)
-    updateRange(dom.immersiveProgress, dom.audio.currentTime || 0, duration)
+    const current = playbackClockTime()
+    updateRange(dom.playerProgress, current, duration)
+    updateRange(dom.immersiveProgress, current, duration)
   })
   dom.audio.addEventListener('ratechange', startLyricsClock)
   dom.audio.addEventListener('volumechange', updateVolumeUi)
   dom.audio.addEventListener('ended', onTrackEnded)
   dom.audio.addEventListener('timeupdate', () => {
-    const current = dom.audio.currentTime || 0
+    finishPendingAudioSeek()
+    const current = playbackClockTime()
     const duration = dom.audio.duration || (state.current?.duration || 0) / 1000
     updateRange(dom.playerProgress, current, duration)
     updateRange(dom.immersiveProgress, current, duration)
@@ -4770,6 +4802,13 @@ function onPageClick(event) {
     renderSearch('', state.searchType || 1018)
     return
   }
+  const clearRecent = event.target.closest('[data-clear-recent]')
+  if (clearRecent) {
+    state.recent = []
+    renderRoute()
+    toast('已清空最近播放')
+    return
+  }
   const searchType = event.target.closest('[data-search-type]')
   if (searchType) {
     const query = String(searchType.dataset.searchQuery || $('[data-page-search]', dom.page)?.value || '').trim()
@@ -4978,6 +5017,10 @@ function onPageClick(event) {
  
 async function init() {
   const initializationStarted = performance.now()
+  // This setting existed briefly in older builds. The limiter and its UI are
+  // gone, so remove the orphaned value explicitly instead of leaving an
+  // invisible upgrade-time restriction behind.
+  try { localStorage.removeItem('menoradio.networkRateLimit') } catch {}
   installImageRetry()
   installThumbnailLoading()
   bindEvents()

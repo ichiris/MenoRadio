@@ -31,7 +31,10 @@
       ? tracks.findIndex((track) => String(track.id) === String(anchorTrack.id))
       : -1
     const anchor = anchorIndex >= 0 ? tracks[anchorIndex] : null
-    if (mode === 'repeat-one') return [anchor || tracks[0]]
+    // Repeat-one is a playback rule, not a queue shape. Keeping every item in
+    // place lets manual previous/next navigation continue to work while only
+    // the natural `ended` event repeats the current track.
+    if (mode === 'repeat-one') return tracks
     if (mode === 'shuffle') {
       if (!anchor || !keepAnchorFirst) return shuffleTracks(tracks)
       return [anchor, ...shuffleTracks(tracks.filter((_, index) => index !== anchorIndex))]

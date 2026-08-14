@@ -4,6 +4,12 @@
     return Number(stamp[1]) * 60 + Number(stamp[2]) + fraction
   }
 
+  function isLyricMetadataLine(text) {
+    const value = String(text || '').trim().replace(/^[【\[]\s*|\s*[】\]]$/g, '')
+    if (!value) return false
+    return /^(?:(?:作[词詞曲]|填[词詞]|[编編]曲|[词詞]曲|制作人|製作人|[监監]制|混音|母[带帶]|[录錄]音|和[声聲]|人[声聲][编編]辑|配唱制作人|吉他|[贝貝]斯|鼓手)\s*[:：]|(?:lyrics?|lyricist|composer|arranger|producer|produced\s+by|mixed\s+by|mastered\s+by)\s*[:：])/i.test(value)
+  }
+
   function parseLrcDocument(text) {
     const lines = []
     const breaks = []
@@ -11,6 +17,7 @@
       const stamps = [...raw.matchAll(/\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g)]
       if (!stamps.length) continue
       const content = raw.replace(/\[[^\]]+\]/g, '').trim()
+      if (content && isLyricMetadataLine(content)) continue
       for (const stamp of stamps) {
         const time = lrcStampTime(stamp)
         if (content) lines.push({ time, text: content })
@@ -33,7 +40,7 @@
       const stamp = raw.match(/^\[(\d+),(\d+)\]/)
       if (!stamp) continue
       const content = raw.replace(/^\[\d+,\d+\]/, '').replace(/\(\d+,\d+,\d+\)/g, '').trim()
-      if (!content) continue
+      if (!content || isLyricMetadataLine(content)) continue
       lines.push({ time: Number(stamp[1]) / 1000, duration: Number(stamp[2]) / 1000, text: content })
     }
     return lines.sort((a, b) => a.time - b.time)
@@ -60,6 +67,7 @@
 
   window.MenoRadioCore = Object.assign(window.MenoRadioCore || {}, {
     lrcStampTime,
+    isLyricMetadataLine,
     parseLrcDocument,
     parseLrc,
     parseYrc,
