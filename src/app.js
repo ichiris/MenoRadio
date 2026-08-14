@@ -1256,7 +1256,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.13.7-preview'
+  const version = '0.13.8-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1842,6 +1842,7 @@ function resetAudioSource(generation = state.audioLoadGeneration, passive = fals
   state.ignoreAudioErrorsUntil = performance.now() + 900
   dom.audio.pause()
   dom.audio.removeAttribute('src')
+  void bridge.media.cancelPlayback().catch(() => {})
   try { dom.audio.load() } catch {}
   try { dom.audio.currentTime = 0 } catch {}
 }
@@ -1892,6 +1893,8 @@ async function ensureAudioSource(track, generation = state.audioLoadGeneration, 
       state.trackReplayGainDb = replayGainDb(audioSource.gain)
       applyEffectiveAudioVolume()
       url = String(url).replace(/^http:/, 'https:')
+      url = await bridge.media.playbackUrl(url).catch(() => url)
+      if (String(state.current?.id) !== trackId || generation !== state.audioLoadGeneration) return false
       state.ignoreAudioErrorsUntil = performance.now() + 900
       state.audioSourceTrackId = trackId
       dom.audio.src = url

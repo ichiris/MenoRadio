@@ -1,9 +1,22 @@
-const { app, BrowserWindow, ipcMain, safeStorage, shell, nativeTheme, session, screen, net } = require('electron')
+const { app, BrowserWindow, ipcMain, safeStorage, shell, nativeTheme, session, screen, net, protocol } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
+const crypto = require('node:crypto')
 const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
 const QRCode = require('qrcode')
+
+const playbackProtocolScheme = 'menoradio-media'
+protocol.registerSchemesAsPrivileged([{
+  scheme: playbackProtocolScheme,
+  privileges: {
+    standard: true,
+    secure: true,
+    stream: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+  },
+}])
 
 const execFileAsync = promisify(execFile)
 
@@ -39,6 +52,10 @@ let mediaPreloadBandwidthAvailableAt = 0
 let activeMediaPreload = null
 let userNetworkRateLimitBytesPerSecond = 0
 let playbackRateLimitBytesPerSecond = 0
+let playbackMediaSource = null
+
+const playbackInitialCredit = 64 * 1024
+const playbackChunkSize = 64 * 1024
 
 function validateMediaPreloadUrl(value) {
   const url = new URL(String(value || ''))
@@ -137,13 +154,11 @@ async function preloadNextMedia(payload = {}) {
 }
 
 function applyEffectiveNetworkRateLimit() {
-  const limits = [userNetworkRateLimitBytesPerSecond, playbackRateLimitBytesPerSecond]
-    .filter((value) => Number.isFinite(value) && value > 0)
-  if (!limits.length) {
+  if (!(userNetworkRateLimitBytesPerSecond > 0)) {
     session.defaultSession.disableNetworkEmulation()
     return 0
   }
-  const bytesPerSecond = Math.round(Math.min(...limits))
+  const bytesPerSecond = Math.round(userNetworkRateLimitBytesPerSecond)
   session.defaultSession.enableNetworkEmulation({
     offline: false,
     latency: 0,
@@ -169,8 +184,261 @@ function setPlaybackRateLimit(bytesPerSecond) {
   playbackRateLimitBytesPerSecond = Number.isFinite(value) && value > 0
     ? Math.round(Math.max(128 * 1024, Math.min(64 * 1024 * 1024, value)))
     : 0
-  applyEffectiveNetworkRateLimit()
   return playbackRateLimitBytesPerSecond
+}
+
+function effectivePlaybackRateLimit() {
+  const limits = [userNetworkRateLimitBytesPerSecond, playbackRateLimitBytesPerSecond]
+    .filter((value) => Number.isFinite(value) && value > 0)
+  return limits.length ? Math.round(Math.min(...limits)) : 0
+}
+
+function cancelPlaybackMediaSource() {
+  const source = playbackMediaSource
+  playbackMediaSource = null
+  if (!source) return false
+  for (const controller of source.controllers) controller.abort()
+  source.controllers.clear()
+  return true
+}
+
+function createPlaybackMediaUrl(value) {
+  const url = validateMediaPreloadUrl(value)
+  cancelPlaybackMediaSource()
+  if (!(effectivePlaybackRateLimit() > 0)) return url
+  const token = crypto.randomUUID()
+  playbackMediaSource = { token, url, controllers: new Set() }
+  return `${playbackProtocolScheme}://stream/${token}`
+}
+
+function playbackRequestHeaders(request) {
+  const headers = new Headers()
+  for (const name of ['accept', 'accept-encoding', 'if-match', 'if-modified-since', 'if-none-match', 'if-range', 'range']) {
+    const value = request.headers.get(name)
+    if (value) headers.set(name, value)
+  }
+  return headers
+}
+
+function playbackResponseHeaders(upstream) {
+  const headers = new Headers()
+  for (const name of [
+    'accept-ranges',
+    'cache-control',
+    'content-length',
+    'content-range',
+    'content-type',
+    'etag',
+    'expires',
+    'last-modified',
+  ]) {
+    const entry = Object.entries(upstream.headers || {})
+      .find(([key]) => key.toLowerCase() === name)
+    const value = entry?.[1]
+    if (Array.isArray(value) && value.length) headers.set(name, value.join(', '))
+    else if (value) headers.set(name, String(value))
+  }
+  return headers
+}
+
+function openPlaybackResponse(source, request, controller) {
+  return new Promise((resolve, reject) => {
+    const client = net.request({
+      url: source.url,
+      method: request.method === 'HEAD' ? 'HEAD' : 'GET',
+      session: session.defaultSession,
+      cache: 'force-cache',
+      referrerPolicy: 'no-referrer',
+    })
+    for (const [name, value] of playbackRequestHeaders(request)) client.setHeader(name, value)
+    const abort = () => client.abort()
+    controller.signal.addEventListener('abort', abort, { once: true })
+    client.once('response', (response) => {
+      response.pause()
+      resolve({
+        client,
+        response,
+        detachAbort: () => controller.signal.removeEventListener('abort', abort),
+      })
+    })
+    client.once('error', (error) => {
+      controller.signal.removeEventListener('abort', abort)
+      reject(error)
+    })
+    client.end()
+  })
+}
+
+function delayWithAbort(delay, signal) {
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      signal.removeEventListener('abort', abort)
+      resolve()
+    }
+    const abort = () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', abort)
+      reject(signal.reason || new Error('Playback request aborted'))
+    }
+    const timer = setTimeout(finish, delay)
+    signal.addEventListener('abort', abort, { once: true })
+  })
+}
+
+function waitForPlaybackBudget(bucket, byteLength, signal) {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      if (signal.aborted) {
+        reject(signal.reason || new Error('Playback request aborted'))
+        return
+      }
+      const rate = effectivePlaybackRateLimit()
+      if (!(rate > 0)) {
+        bucket.tokens = playbackInitialCredit
+        bucket.updatedAt = Date.now()
+        resolve()
+        return
+      }
+      const now = Date.now()
+      bucket.tokens = Math.min(playbackInitialCredit, bucket.tokens + ((now - bucket.updatedAt) * rate / 1000))
+      bucket.updatedAt = now
+      if (bucket.tokens >= byteLength) {
+        bucket.tokens -= byteLength
+        resolve()
+        return
+      }
+      const delay = Math.max(1, Math.ceil(((byteLength - bucket.tokens) / rate) * 1000))
+      void delayWithAbort(delay, signal).then(run, reject)
+    }
+    run()
+  })
+}
+
+function throttledPlaybackBody(body, controller, onFinish) {
+  const bucket = { tokens: playbackInitialCredit, updatedAt: Date.now() }
+  const chunks = []
+  let output = null
+  let pumping = false
+  let upstreamEnded = false
+  let upstreamError = null
+  let finished = false
+  const finish = () => {
+    if (finished) return
+    finished = true
+    body.removeListener('data', onData)
+    body.removeListener('end', onEnd)
+    body.removeListener('aborted', onAborted)
+    body.removeListener('error', onError)
+    onFinish()
+  }
+  const stop = (error = null) => {
+    if (finished) return
+    finish()
+    if (!output) return
+    if (error && !controller.signal.aborted) output.error(error)
+    else output.close()
+  }
+  const pump = async () => {
+    if (pumping || finished || !output) return
+    pumping = true
+    try {
+      while (chunks.length && (output.desiredSize ?? 1) > 0) {
+        const chunk = chunks.shift()
+        await waitForPlaybackBudget(bucket, chunk.byteLength, controller.signal)
+        if (finished || controller.signal.aborted) break
+        output.enqueue(chunk)
+      }
+      if (upstreamError) stop(upstreamError)
+      else if (upstreamEnded && !chunks.length) stop()
+      else if (!chunks.length && !controller.signal.aborted) body.resume()
+    } catch (error) {
+      stop(error)
+    } finally {
+      pumping = false
+      if (!finished && (upstreamEnded || upstreamError || (chunks.length && (output.desiredSize ?? 1) > 0))) void pump()
+    }
+  }
+  const onData = (value) => {
+    body.pause()
+    const buffer = Buffer.isBuffer(value) ? value : Buffer.from(value)
+    for (let offset = 0; offset < buffer.byteLength; offset += playbackChunkSize) {
+      chunks.push(buffer.subarray(offset, Math.min(buffer.byteLength, offset + playbackChunkSize)))
+    }
+    void pump()
+  }
+  const onEnd = () => {
+    upstreamEnded = true
+    void pump()
+  }
+  const onAborted = () => {
+    upstreamError = new Error('Playback response aborted')
+    void pump()
+  }
+  const onError = (error) => {
+    upstreamError = error
+    void pump()
+  }
+
+  return new ReadableStream({
+    start(controllerOutput) {
+      output = controllerOutput
+      body.on('data', onData)
+      body.once('end', onEnd)
+      body.once('aborted', onAborted)
+      body.once('error', onError)
+      body.resume()
+    },
+    pull() {
+      void pump()
+    },
+    cancel(reason) {
+      controller.abort(reason)
+      finish()
+    },
+  })
+}
+
+function registerPlaybackProtocol() {
+  protocol.handle(playbackProtocolScheme, async (request) => {
+    const source = playbackMediaSource
+    let token = ''
+    try {
+      token = new URL(request.url).pathname.replace(/^\//, '')
+    } catch {}
+    if (!source || token !== source.token) return new Response('', { status: 404 })
+
+    const controller = new AbortController()
+    source.controllers.add(controller)
+    const abortUpstream = () => controller.abort(request.signal?.reason)
+    request.signal?.addEventListener('abort', abortUpstream, { once: true })
+    const finish = () => {
+      source.controllers.delete(controller)
+      request.signal?.removeEventListener('abort', abortUpstream)
+      detachClientAbort()
+    }
+    let detachClientAbort = () => {}
+    try {
+      const opened = await openPlaybackResponse(source, request, controller)
+      const { client, response: upstream } = opened
+      detachClientAbort = opened.detachAbort
+      const headers = playbackResponseHeaders(upstream)
+      if (request.method === 'HEAD') {
+        client.abort()
+        finish()
+        return new Response(null, { status: upstream.statusCode, statusText: upstream.statusMessage, headers })
+      }
+      return new Response(throttledPlaybackBody(upstream, controller, finish), {
+        status: upstream.statusCode,
+        statusText: upstream.statusMessage,
+        headers,
+      })
+    } catch (error) {
+      finish()
+      if (controller.signal.aborted) return new Response('', { status: 499 })
+      console.warn('[playback-stream] Unable to proxy audio:', error?.message || error)
+      return new Response('', { status: 502 })
+    }
+  })
 }
 
 function acquireThumbnailSlot() {
@@ -1026,6 +1294,8 @@ function registerWindowIpc() {
   ipcMain.handle('media:preload-next', (_event, payload) => preloadNextMedia(payload))
   ipcMain.handle('media:cancel-preload', (_event, exceptKey) => cancelMediaPreload(String(exceptKey || '')))
   ipcMain.handle('media:set-playback-rate-limit', (_event, value) => setPlaybackRateLimit(value))
+  ipcMain.handle('media:playback-url', (_event, url) => createPlaybackMediaUrl(url))
+  ipcMain.handle('media:cancel-playback', () => cancelPlaybackMediaSource())
   ipcMain.handle('floating-lyrics:state', () => ({
     config: floatingLyricsState.config,
     bounds: floatingLyricsState.bounds,
@@ -1362,6 +1632,7 @@ if (hasSingleInstanceLock) {
   app.whenReady().then(() => {
     loadSession()
     loadFloatingLyricsState()
+    registerPlaybackProtocol()
     registerWindowIpc()
     registerAuthIpc()
     registerDataIpc()
@@ -1375,6 +1646,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   cancelMediaPreload()
+  cancelPlaybackMediaSource()
   clearTimeout(floatingLyricsSaveTimer)
   clearFloatingLyricsShowTimer()
   if (!resettingApplication) writeFloatingLyricsState()
