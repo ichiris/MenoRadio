@@ -139,6 +139,8 @@ const state = {
   audioSourcePromise: null,
   audioSourcePromiseGeneration: 0,
   currentAudioSource: null,
+  currentAudioDirectUrl: '',
+  playbackProxyFallbackGeneration: 0,
   passiveAudioGeneration: 0,
   pendingSeekTime: null,
   ignoreAudioErrorsUntil: 0,
@@ -1264,7 +1266,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.13.10-preview'
+  const version = '0.13.12-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1847,6 +1849,8 @@ function resetAudioSource(generation = state.audioLoadGeneration, passive = fals
   state.audioSourcePromise = null
   state.audioSourcePromiseGeneration = 0
   state.currentAudioSource = null
+  state.currentAudioDirectUrl = ''
+  state.playbackProxyFallbackGeneration = 0
   state.passiveAudioGeneration = passive ? generation : 0
   state.pendingSeekTime = null
   state.ignoreAudioErrorsUntil = performance.now() + 900
@@ -1901,9 +1905,10 @@ async function ensureAudioSource(track, generation = state.audioLoadGeneration, 
       state.trackReplayGainDb = replayGainDb(audioSource.gain)
       applyEffectiveAudioVolume()
       url = String(url).replace(/^http:/, 'https:')
+      state.currentAudioDirectUrl = url
       if (state.mediaLoadingOptimization) {
         // The main process cancels obsolete low-priority work before returning
-        // this bounded Range source, so current playback never waits behind it.
+        // this paced media source, so current playback never waits behind it.
         url = await bridge.media.playbackUrl(url, {
           size: audioSource.size,
           br: audioSource.br,
@@ -4016,6 +4021,27 @@ function bindEvents() {
         state.passiveAudioGeneration = 0
         dom.audio.removeAttribute('src')
         try { dom.audio.load() } catch {}
+        return
+      }
+      // The paced custom stream is deliberately conservative. If Chromium or
+      // a CDN rejects that stream before playback begins, fall back once to
+      // the original URL instead of leaving the player unusable. This path is
+      // only entered after a real media error; normal optimized playback stays
+      // on the paced connection.
+      const generation = state.audioLoadGeneration
+      if (state.mediaLoadingOptimization
+        && String(dom.audio.src || '').startsWith('menoradio-media:')
+        && state.currentAudioDirectUrl
+        && state.playbackProxyFallbackGeneration !== generation) {
+        state.playbackProxyFallbackGeneration = generation
+        state.ignoreAudioErrorsUntil = performance.now() + 900
+        void bridge.media.cancelPlayback().catch(() => {})
+        dom.audio.src = state.currentAudioDirectUrl
+        dom.audio.load()
+        dom.audio.play().catch((error) => {
+          if (generation !== state.audioLoadGeneration || isSupersededPlaybackError(error)) return
+          handlePlaybackFailure(state.current, generation, playbackError(error?.message || '音频连接失败', 'network'))
+        })
         return
       }
       const mediaErrorCode = Number(dom.audio.error.code || 0)

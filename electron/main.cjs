@@ -6,9 +6,8 @@ const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
 const QRCode = require('qrcode')
 const {
-  DEFAULT_SEGMENT_BYTES,
-  playbackBytesPerSecond,
-  boundedByteRange,
+  effectivePlaybackBytesPerSecond,
+  requestedByteRange,
   parseContentRange,
 } = require('./playback-stream.cjs')
 
@@ -63,9 +62,8 @@ function cancelPlaybackMediaSource() {
   const source = playbackMediaSource
   if (!source) return false
   source.cancelled = true
-  for (const controller of source.controllers) controller.abort()
-  source.controllers.clear()
-  source.cache.clear()
+  for (const request of source.requests) request.abort()
+  source.requests.clear()
   playbackMediaSource = null
   return true
 }
@@ -79,178 +77,156 @@ function playbackSourceUrl(payload = {}) {
     token,
     url,
     size: Math.max(0, Number(payload.size) || 0),
-    bytesPerSecond: playbackBytesPerSecond(payload, payload),
+    bytesPerSecond: effectivePlaybackBytesPerSecond(payload, userNetworkRateLimitBytesPerSecond),
     availableAt: Date.now(),
-    lastEnd: -1,
     cancelled: false,
-    controllers: new Set(),
-    cache: new Map(),
-    queue: Promise.resolve(),
+    requests: new Set(),
   }
   return `${playbackProtocolScheme}://playback/${token}`
 }
 
-function waitForPlaybackTurn(delay, source) {
-  if (!(delay > 0)) return Promise.resolve()
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, delay)
-    const interval = setInterval(() => {
-      if (!source.cancelled) return
-      clearTimeout(timer)
-      clearInterval(interval)
-      reject(new Error('Playback source cancelled'))
-    }, Math.min(80, delay))
-    timer.unref?.()
-    interval.unref?.()
-    setTimeout(() => clearInterval(interval), delay + 10).unref?.()
-  })
+function responseHeader(headers, name) {
+  const value = headers?.[String(name).toLowerCase()]
+  return Array.isArray(value) ? value[0] : value
 }
 
-function rememberPlaybackSegment(source, key, value) {
-  source.cache.set(key, value)
-  while (source.cache.size > 4) source.cache.delete(source.cache.keys().next().value)
+function playbackResponseHeaders(response) {
+  const headers = {
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'no-store',
+    'Content-Type': responseHeader(response.headers, 'content-type') || 'audio/mpeg',
+  }
+  const contentLength = responseHeader(response.headers, 'content-length')
+  const contentRange = responseHeader(response.headers, 'content-range')
+  if (contentLength) headers['Content-Length'] = String(contentLength)
+  if (contentRange) headers['Content-Range'] = String(contentRange)
+  return headers
 }
 
-async function readBoundedPlaybackSegment(source, request) {
-  if (source.cancelled) throw new Error('Playback source cancelled')
-  const requestedHeader = request.headers.get('range') || 'bytes=0-'
-  const bounded = boundedByteRange(requestedHeader, source.size, DEFAULT_SEGMENT_BYTES)
-  if (source.size > 0 && bounded.start >= source.size) {
+function readContinuousPlayback(source, protocolRequest) {
+  if (source.cancelled) return Promise.reject(new Error('Playback source cancelled'))
+  const requested = requestedByteRange(protocolRequest.headers.get('range') || 'bytes=0-', source.size)
+  if (source.size > 0 && requested.start >= source.size) {
     return new Response(null, {
       status: 416,
       headers: { 'Content-Range': `bytes */${source.size}`, 'Accept-Ranges': 'bytes' },
     })
   }
-  const cacheKey = bounded.header
-  const cached = source.cache.get(cacheKey)
-  if (cached) return new Response(cached.buffer.slice(0), { status: 206, headers: cached.headers })
-
-  // A media element may ask for the next byte range before it has completely
-  // consumed the previous response. Keep one upstream body active at a time;
-  // otherwise two individually bounded ranges can still form a short spike.
-  if (source.streamDone) await source.streamDone.catch(() => {})
-  if (source.cancelled) throw new Error('Playback source cancelled')
-
-  const sequential = bounded.start === source.lastEnd + 1
-  if (!sequential) source.availableAt = Date.now()
-  const delay = Math.max(0, source.availableAt - Date.now())
-  await waitForPlaybackTurn(delay, source)
-  if (source.cancelled) throw new Error('Playback source cancelled')
-
-  const controller = new AbortController()
-  const abortUpstream = () => controller.abort(request.signal?.reason)
-  if (request.signal?.aborted) throw new Error('Playback request cancelled')
-  request.signal?.addEventListener('abort', abortUpstream, { once: true })
-  source.controllers.add(controller)
-  try {
-    const upstream = await net.fetch(source.url, {
+  return new Promise((resolve, reject) => {
+    const upstreamRequest = net.request({
+      url: source.url,
       method: 'GET',
-      headers: {
-        Range: bounded.header,
-        'Accept-Encoding': 'identity',
-      },
-      cache: 'no-store',
-      signal: controller.signal,
-      bypassCustomProtocolHandlers: true,
+      session: session.defaultSession,
+      redirect: 'follow',
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
     })
-    if (![200, 206].includes(upstream.status) || !upstream.body) {
-      throw new Error(`Playback media request failed (${upstream.status})`)
-    }
-    const upstreamRange = parseContentRange(upstream.headers.get('content-range'))
-    if (bounded.start > 0 && upstream.status !== 206) {
-      await upstream.body.cancel().catch(() => {})
-      throw new Error('Playback server ignored a seek range')
-    }
-    const total = source.size
-      || upstreamRange?.total
-      || Number(upstream.headers.get('content-length'))
-      || (bounded.end + 1)
-    if (!source.size && total > 0) source.size = total
-    const upstreamLength = upstreamRange
-      ? upstreamRange.end - upstreamRange.start + 1
-      : Number(upstream.headers.get('content-length')) || bounded.length
-    const responseLength = Math.max(1, Math.min(bounded.length, upstreamLength))
-    const actualEnd = bounded.start + responseLength - 1
-    const headers = {
-      'Accept-Ranges': 'bytes',
-      'Cache-Control': 'no-store',
-      'Content-Length': String(responseLength),
-      'Content-Range': `bytes ${bounded.start}-${actualEnd}/${Math.max(total, actualEnd + 1)}`,
-      'Content-Type': upstream.headers.get('content-type') || 'audio/mpeg',
-    }
-    const reader = upstream.body.getReader()
-    const chunks = []
-    let received = 0
-    let streamFinished = false
-    let resolveStream
-    source.streamDone = new Promise((resolve) => { resolveStream = resolve })
+    upstreamRequest.setHeader('Range', requested.header)
+    upstreamRequest.setHeader('Accept-Encoding', 'identity')
+    source.requests.add(upstreamRequest)
+    let settled = false
+    let streamController = null
+    let upstreamResponse = null
+    let resumeTimer = null
+    let ended = false
 
-    const finishStream = async (cacheCompleted = false) => {
-      if (streamFinished) return
-      streamFinished = true
-      if (cacheCompleted && received === responseLength) {
-        const body = Buffer.concat(chunks, received)
-        rememberPlaybackSegment(source, cacheKey, { buffer: body, headers })
-        source.lastEnd = bounded.start + received - 1
+    const cleanup = () => {
+      clearTimeout(resumeTimer)
+      source.requests.delete(upstreamRequest)
+      protocolRequest.signal?.removeEventListener('abort', abortUpstream)
+    }
+    const fail = (error) => {
+      if (ended) return
+      ended = true
+      if (settled && streamController) streamController.error(error)
+      else if (!settled) reject(error)
+      settled = true
+      cleanup()
+    }
+    const abortUpstream = () => upstreamRequest.abort()
+    if (protocolRequest.signal?.aborted || source.cancelled) {
+      cleanup()
+      reject(new Error('Playback request cancelled'))
+      return
+    }
+    protocolRequest.signal?.addEventListener('abort', abortUpstream, { once: true })
+
+    const resumeWhenReady = () => {
+      if (ended || source.cancelled || protocolRequest.signal?.aborted || !upstreamResponse) return
+      if (streamController?.desiredSize !== null && streamController?.desiredSize <= 0) return
+      clearTimeout(resumeTimer)
+      const delay = Math.max(0, source.availableAt - Date.now())
+      if (delay > 0) {
+        resumeTimer = setTimeout(resumeWhenReady, delay)
+        resumeTimer.unref?.()
+      } else {
+        upstreamResponse.resume()
       }
-      source.controllers.delete(controller)
-      request.signal?.removeEventListener('abort', abortUpstream)
-      resolveStream?.()
     }
 
-    const body = new ReadableStream({
-      async pull(streamController) {
-        try {
-          if (source.cancelled || request.signal?.aborted) throw new Error('Playback request cancelled')
-          if (received >= responseLength) {
-            streamController.close()
-            await reader.cancel().catch(() => {})
-            await finishStream(true)
-            return
-          }
-
-          // Deliver the first network chunk immediately so play() is not held
-          // behind a complete segment download. Subsequent pulls are paced by
-          // the current track's own bitrate plus a small playback headroom.
-          const chunkDelay = Math.max(0, source.availableAt - Date.now())
-          await waitForPlaybackTurn(chunkDelay, source)
-          const { done, value } = await reader.read()
-          if (done) {
-            streamController.close()
-            await finishStream(received === responseLength)
-            return
-          }
-          if (!value?.byteLength) return
-          const remaining = responseLength - received
-          const chunk = value.byteLength > remaining ? value.subarray(0, remaining) : value
-          chunks.push(Buffer.from(chunk))
-          received += chunk.byteLength
-          source.availableAt = Math.max(Date.now(), source.availableAt)
-            + Math.ceil((chunk.byteLength / source.bytesPerSecond) * 1000)
-          streamController.enqueue(chunk)
-          if (received >= responseLength) {
-            streamController.close()
-            await reader.cancel().catch(() => {})
-            await finishStream(true)
-          }
-        } catch (error) {
-          streamController.error(error)
-          await reader.cancel(error).catch(() => {})
-          await finishStream(false)
-        }
-      },
-      async cancel(reason) {
-        controller.abort(reason)
-        await reader.cancel(reason).catch(() => {})
-        await finishStream(false)
-      },
+    upstreamRequest.on('response', (response) => {
+      upstreamResponse = response
+      response.pause()
+      if (![200, 206].includes(response.statusCode)) {
+        upstreamRequest.abort()
+        fail(new Error(`Playback media request failed (${response.statusCode})`))
+        return
+      }
+      if (requested.start > 0 && response.statusCode !== 206) {
+        upstreamRequest.abort()
+        fail(new Error('Playback server ignored a seek range'))
+        return
+      }
+      const upstreamRange = parseContentRange(responseHeader(response.headers, 'content-range'))
+      if (!source.size) {
+        const contentLength = Number(responseHeader(response.headers, 'content-length')) || 0
+        source.size = upstreamRange?.total || (response.statusCode === 200 ? contentLength : 0)
+      }
+      const body = new ReadableStream({
+        start(controller) {
+          streamController = controller
+          response.on('data', (chunk) => {
+            if (ended || !chunk?.length) return
+            response.pause()
+            controller.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength))
+            source.availableAt = Math.max(Date.now(), source.availableAt)
+              + Math.ceil((chunk.length / source.bytesPerSecond) * 1000)
+            resumeWhenReady()
+          })
+          response.on('end', () => {
+            if (ended) return
+            ended = true
+            controller.close()
+            cleanup()
+          })
+          response.on('aborted', () => {
+            if (!source.cancelled && !protocolRequest.signal?.aborted) fail(new Error('Playback response aborted'))
+            else cleanup()
+          })
+          response.on('error', fail)
+          resumeWhenReady()
+        },
+        pull() {
+          resumeWhenReady()
+        },
+        cancel() {
+          ended = true
+          upstreamRequest.abort()
+          cleanup()
+        },
+      })
+      settled = true
+      resolve(new Response(body, {
+        status: response.statusCode,
+        headers: playbackResponseHeaders(response),
+      }))
     })
-    return new Response(body, { status: 206, headers })
-  } catch (error) {
-    source.controllers.delete(controller)
-    request.signal?.removeEventListener('abort', abortUpstream)
-    throw error
-  }
+    upstreamRequest.on('error', (error) => {
+      if (!source.cancelled && !protocolRequest.signal?.aborted) fail(error)
+      else cleanup()
+    })
+    upstreamRequest.end()
+  })
 }
 
 function registerPlaybackProtocol() {
@@ -270,16 +246,14 @@ function registerPlaybackProtocol() {
         },
       })
     }
-    const task = source.queue
-      .catch(() => {})
-      .then(() => readBoundedPlaybackSegment(source, request))
+    const task = Promise.resolve()
+      .then(() => readContinuousPlayback(source, request))
       .catch((error) => {
         if (!source.cancelled && !request.signal?.aborted) {
-          console.warn('[playback-range] Unable to read audio segment:', error?.message || error)
+          console.warn('[playback-stream] Unable to read audio:', error?.message || error)
         }
         return new Response(null, { status: source.cancelled || request.signal?.aborted ? 499 : 502 })
       })
-    source.queue = task.then(() => {})
     return task
   })
 }
@@ -295,7 +269,10 @@ function validateMediaPreloadUrl(value) {
 function mediaPreloadDelay(byteLength) {
   const now = Date.now()
   const start = Math.max(now, mediaPreloadBandwidthAvailableAt)
-  mediaPreloadBandwidthAvailableAt = start + Math.ceil((byteLength / mediaPreloadBytesPerSecond) * 1000)
+  const bytesPerSecond = userNetworkRateLimitBytesPerSecond > 0
+    ? Math.min(mediaPreloadBytesPerSecond, userNetworkRateLimitBytesPerSecond)
+    : mediaPreloadBytesPerSecond
+  mediaPreloadBandwidthAvailableAt = start + Math.ceil((byteLength / bytesPerSecond) * 1000)
   return Math.max(0, mediaPreloadBandwidthAvailableAt - now)
 }
 
@@ -380,27 +357,16 @@ async function preloadNextMedia(payload = {}) {
   return task.promise
 }
 
-function applyEffectiveNetworkRateLimit() {
-  if (!(userNetworkRateLimitBytesPerSecond > 0)) {
-    session.defaultSession.disableNetworkEmulation()
-    return 0
-  }
-  const bytesPerSecond = Math.round(userNetworkRateLimitBytesPerSecond)
-  session.defaultSession.enableNetworkEmulation({
-    offline: false,
-    latency: 0,
-    downloadThroughput: bytesPerSecond,
-    uploadThroughput: 0,
-  })
-  return bytesPerSecond
-}
-
 function setNetworkRateLimit(megabytesPerSecond) {
   const value = Number(megabytesPerSecond)
   userNetworkRateLimitBytesPerSecond = Number.isFinite(value) && value > 0
     ? Math.round(Math.max(.1, Math.min(1024, value)) * 1024 * 1024)
     : 0
-  applyEffectiveNetworkRateLimit()
+  // Never throttle the default Electron session. That session also carries
+  // playlist, login, lyric and image API calls, so network emulation here made
+  // the entire application appear offline. The limit is applied only by the
+  // bulk-media lanes (current audio, thumbnails and the next-cover warm-up).
+  session.defaultSession.disableNetworkEmulation()
   return userNetworkRateLimitBytesPerSecond > 0
     ? userNetworkRateLimitBytesPerSecond / (1024 * 1024)
     : 0
@@ -423,7 +389,10 @@ function releaseThumbnailSlot() {
 async function reserveThumbnailBandwidth(byteLength) {
   const now = Date.now()
   const start = Math.max(now, thumbnailBandwidthAvailableAt)
-  thumbnailBandwidthAvailableAt = start + Math.ceil((byteLength / thumbnailBytesPerSecond) * 1000)
+  const bytesPerSecond = userNetworkRateLimitBytesPerSecond > 0
+    ? Math.min(thumbnailBytesPerSecond, userNetworkRateLimitBytesPerSecond)
+    : thumbnailBytesPerSecond
+  thumbnailBandwidthAvailableAt = start + Math.ceil((byteLength / bytesPerSecond) * 1000)
   const delay = thumbnailBandwidthAvailableAt - now
   if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
 }
@@ -1593,6 +1562,9 @@ function registerDataIpc() {
 
 if (hasSingleInstanceLock) {
   app.whenReady().then(() => {
+    // Clear the obsolete whole-session limiter before any renderer/API work.
+    // Bulk media now owns its own pacing and must never delay application data.
+    session.defaultSession.disableNetworkEmulation()
     loadSession()
     loadFloatingLyricsState()
     registerPlaybackProtocol()

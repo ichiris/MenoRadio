@@ -1,7 +1,3 @@
-// A single 512 KiB request is large enough for Chromium to start common MP3,
-// FLAC and Hi-Res streams without waiting on several CDN round trips, while it
-// is still far too small to recreate the old whole-file bandwidth burst.
-const DEFAULT_SEGMENT_BYTES = 512 * 1024
 const PLAYBACK_HEADROOM_BYTES_PER_SECOND = 512 * 1024
 const MIN_PLAYBACK_BYTES_PER_SECOND = 768 * 1024
 const MAX_PLAYBACK_BYTES_PER_SECOND = 16 * 1024 * 1024
@@ -34,19 +30,24 @@ function parseByteRange(value) {
   return { start, end }
 }
 
-function boundedByteRange(value, totalBytes = 0, segmentBytes = DEFAULT_SEGMENT_BYTES) {
+function requestedByteRange(value, totalBytes = 0) {
   const requested = parseByteRange(value)
   const total = Math.max(0, Math.floor(positiveNumber(totalBytes)))
-  const length = Math.max(64 * 1024, Math.floor(positiveNumber(segmentBytes) || DEFAULT_SEGMENT_BYTES))
   const maximumEnd = total > 0 ? total - 1 : Number.MAX_SAFE_INTEGER
   const requestedEnd = requested.end === null ? maximumEnd : Math.min(requested.end, maximumEnd)
-  const end = Math.min(requestedEnd, requested.start + length - 1)
+  const end = requestedEnd
   return {
     start: requested.start,
     end,
-    length: Math.max(0, end - requested.start + 1),
-    header: `bytes=${requested.start}-${end}`,
+    length: total > 0 || requested.end !== null ? Math.max(0, end - requested.start + 1) : 0,
+    header: `bytes=${requested.start}-${end === Number.MAX_SAFE_INTEGER ? '' : end}`,
   }
+}
+
+function effectivePlaybackBytesPerSecond(source = {}, userLimit = 0) {
+  const adaptive = playbackBytesPerSecond(source, source)
+  const limit = positiveNumber(userLimit)
+  return Math.round(limit > 0 ? Math.min(adaptive, limit) : adaptive)
 }
 
 function parseContentRange(value) {
@@ -60,9 +61,9 @@ function parseContentRange(value) {
 }
 
 module.exports = {
-  DEFAULT_SEGMENT_BYTES,
   playbackBytesPerSecond,
+  effectivePlaybackBytesPerSecond,
   parseByteRange,
-  boundedByteRange,
+  requestedByteRange,
   parseContentRange,
 }
