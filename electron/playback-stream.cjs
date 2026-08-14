@@ -1,23 +1,55 @@
-const PLAYBACK_HEADROOM_BYTES_PER_SECOND = 512 * 1024
-const MIN_PLAYBACK_BYTES_PER_SECOND = 768 * 1024
-const MAX_PLAYBACK_BYTES_PER_SECOND = 16 * 1024 * 1024
+const PLAYBACK_CRUISE_FACTOR = 1.5
+const MIN_PLAYBACK_BYTES_PER_SECOND = 96 * 1024
+const FALLBACK_PLAYBACK_BYTES_PER_SECOND = 192 * 1024
+// Keep even very high bitrate tiers below the short full-bandwidth bursts that
+// disturb latency-sensitive traffic. The buffer watermarks still give these
+// formats room to start quickly without downloading the whole file.
+const MAX_PLAYBACK_BYTES_PER_SECOND = Math.round(1.4 * 1024 * 1024)
+const PLAYBACK_BURST_BYTES_PER_SECOND = Math.round(1.4 * 1024 * 1024)
+const PLAYBACK_STARTUP_BYTES = 512 * 1024
+const PLAYBACK_SEGMENT_BYTES = 128 * 1024
+const PLAYBACK_BUFFER_LOW_SECONDS = 10
+const PLAYBACK_BUFFER_HIGH_SECONDS = 25
 
 function positiveNumber(value) {
   const number = Number(value)
   return Number.isFinite(number) && number > 0 ? number : 0
 }
 
-function playbackBytesPerSecond(source = {}, track = {}) {
+function measuredBytesPerSecond(source = {}, track = {}) {
   const bitrate = positiveNumber(source.br)
   const size = positiveNumber(source.size)
   const durationMs = positiveNumber(source.time) || positiveNumber(track.duration)
-  const measured = bitrate > 0
-    ? bitrate / 8
-    : (size > 0 && durationMs > 0 ? size / (durationMs / 1000) : 0)
+  if (bitrate > 0) return bitrate / 8
+  if (size > 0 && durationMs > 0) return size / (durationMs / 1000)
+  return 0
+}
+
+function playbackBytesPerSecond(source = {}, track = {}) {
+  const measured = measuredBytesPerSecond(source, track)
+  if (!measured) return FALLBACK_PLAYBACK_BYTES_PER_SECOND
   return Math.round(Math.max(
     MIN_PLAYBACK_BYTES_PER_SECOND,
-    Math.min(MAX_PLAYBACK_BYTES_PER_SECOND, measured + PLAYBACK_HEADROOM_BYTES_PER_SECOND),
+    Math.min(MAX_PLAYBACK_BYTES_PER_SECOND, measured * PLAYBACK_CRUISE_FACTOR),
   ))
+}
+
+function effectivePlaybackBytesPerSecond(source = {}, userLimit = 0) {
+  const adaptive = playbackBytesPerSecond(source, source)
+  const limit = positiveNumber(userLimit)
+  return Math.round(limit > 0 ? Math.min(adaptive, limit) : adaptive)
+}
+
+function playbackBurstBytesPerSecond(source = {}, userLimit = 0) {
+  const cruise = effectivePlaybackBytesPerSecond(source, userLimit)
+  const limit = positiveNumber(userLimit)
+  const burst = Math.max(cruise, PLAYBACK_BURST_BYTES_PER_SECOND)
+  return Math.round(limit > 0 ? Math.min(burst, limit) : burst)
+}
+
+function playbackSegmentBytes(remaining = Number.MAX_SAFE_INTEGER) {
+  const value = Math.max(0, Math.floor(Number(remaining) || 0))
+  return Math.min(PLAYBACK_SEGMENT_BYTES, value)
 }
 
 function parseByteRange(value) {
@@ -44,12 +76,6 @@ function requestedByteRange(value, totalBytes = 0) {
   }
 }
 
-function effectivePlaybackBytesPerSecond(source = {}, userLimit = 0) {
-  const adaptive = playbackBytesPerSecond(source, source)
-  const limit = positiveNumber(userLimit)
-  return Math.round(limit > 0 ? Math.min(adaptive, limit) : adaptive)
-}
-
 function parseContentRange(value) {
   const match = /^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i.exec(String(value || '').trim())
   if (!match) return null
@@ -61,8 +87,13 @@ function parseContentRange(value) {
 }
 
 module.exports = {
+  PLAYBACK_STARTUP_BYTES,
+  PLAYBACK_BUFFER_LOW_SECONDS,
+  PLAYBACK_BUFFER_HIGH_SECONDS,
   playbackBytesPerSecond,
   effectivePlaybackBytesPerSecond,
+  playbackBurstBytesPerSecond,
+  playbackSegmentBytes,
   parseByteRange,
   requestedByteRange,
   parseContentRange,

@@ -6,10 +6,19 @@ const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
 const QRCode = require('qrcode')
 const {
+  PLAYBACK_STARTUP_BYTES,
+  PLAYBACK_BUFFER_LOW_SECONDS,
+  PLAYBACK_BUFFER_HIGH_SECONDS,
   effectivePlaybackBytesPerSecond,
+  playbackBurstBytesPerSecond,
+  playbackSegmentBytes,
   requestedByteRange,
   parseContentRange,
 } = require('./playback-stream.cjs')
+const {
+  normalizeAudioQuality,
+  requestedApiAudioQuality,
+} = require('./audio-quality.cjs')
 
 const playbackProtocolScheme = 'menoradio-media'
 protocol.registerSchemesAsPrivileged([{
@@ -62,8 +71,11 @@ function cancelPlaybackMediaSource() {
   const source = playbackMediaSource
   if (!source) return false
   source.cancelled = true
+  source.activeReader?.cancel()
   for (const request of source.requests) request.abort()
   source.requests.clear()
+  for (const wake of source.bufferWaiters) wake()
+  source.bufferWaiters.clear()
   playbackMediaSource = null
   return true
 }
@@ -77,8 +89,15 @@ function playbackSourceUrl(payload = {}) {
     token,
     url,
     size: Math.max(0, Number(payload.size) || 0),
-    bytesPerSecond: effectivePlaybackBytesPerSecond(payload, userNetworkRateLimitBytesPerSecond),
+    cruiseBytesPerSecond: effectivePlaybackBytesPerSecond(payload, userNetworkRateLimitBytesPerSecond),
+    burstBytesPerSecond: playbackBurstBytesPerSecond(payload, userNetworkRateLimitBytesPerSecond),
     availableAt: Date.now(),
+    bufferAheadSeconds: 0,
+    bufferKnown: false,
+    bufferGateClosed: false,
+    paused: false,
+    bufferWaiters: new Set(),
+    activeReader: null,
     cancelled: false,
     requests: new Set(),
   }
@@ -90,29 +109,89 @@ function responseHeader(headers, name) {
   return Array.isArray(value) ? value[0] : value
 }
 
-function playbackResponseHeaders(response) {
+function playbackResponseHeaders(source, start, end, total, partial) {
   const headers = {
     'Accept-Ranges': 'bytes',
     'Cache-Control': 'no-store',
-    'Content-Type': responseHeader(response.headers, 'content-type') || 'audio/mpeg',
+    'Content-Type': source.contentType || 'audio/mpeg',
   }
-  const contentLength = responseHeader(response.headers, 'content-length')
-  const contentRange = responseHeader(response.headers, 'content-range')
-  if (contentLength) headers['Content-Length'] = String(contentLength)
-  if (contentRange) headers['Content-Range'] = String(contentRange)
+  if (Number.isSafeInteger(end) && end >= start) headers['Content-Length'] = String(end - start + 1)
+  if (partial && total > 0) headers['Content-Range'] = `bytes ${start}-${end}/${total}`
   return headers
 }
 
-function readContinuousPlayback(source, protocolRequest) {
-  if (source.cancelled) return Promise.reject(new Error('Playback source cancelled'))
-  const requested = requestedByteRange(protocolRequest.headers.get('range') || 'bytes=0-', source.size)
-  if (source.size > 0 && requested.start >= source.size) {
-    return new Response(null, {
-      status: 416,
-      headers: { 'Content-Range': `bytes */${source.size}`, 'Accept-Ranges': 'bytes' },
+function updatePlaybackBuffer(payload = {}) {
+  const source = playbackMediaSource
+  if (!source || source.cancelled) return false
+  let token = ''
+  try {
+    const parsed = new URL(String(payload.src || ''))
+    if (parsed.protocol !== `${playbackProtocolScheme}:` || parsed.hostname !== 'playback') return false
+    token = parsed.pathname.replace(/^\//, '')
+  } catch {
+    return false
+  }
+  if (token !== source.token) return false
+  const ahead = Math.max(0, Math.min(300, Number(payload.bufferedAhead) || 0))
+  source.bufferAheadSeconds = ahead
+  source.bufferKnown = true
+  source.paused = Boolean(payload.paused)
+  if (source.bufferGateClosed) {
+    if (ahead <= PLAYBACK_BUFFER_LOW_SECONDS) source.bufferGateClosed = false
+  } else if (ahead >= (source.paused ? PLAYBACK_BUFFER_LOW_SECONDS : PLAYBACK_BUFFER_HIGH_SECONDS)) {
+    source.bufferGateClosed = true
+  }
+  if (!source.bufferGateClosed) {
+    for (const wake of source.bufferWaiters) wake()
+    source.bufferWaiters.clear()
+  }
+  return true
+}
+
+function cancellableDelay(milliseconds, reader) {
+  if (milliseconds <= 0) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    if (reader.cancelled || reader.source.cancelled) return reject(new Error('Playback request cancelled'))
+    const timer = setTimeout(() => {
+      reader.delayTimers.delete(timer)
+      if (reader.cancelled || reader.source.cancelled) reject(new Error('Playback request cancelled'))
+      else resolve()
+    }, milliseconds)
+    timer.unref?.()
+    reader.delayTimers.add(timer)
+  })
+}
+
+async function reservePlaybackBandwidth(source, reader, byteLength) {
+  const now = Date.now()
+  const rate = reader.startupBytesRemaining > 0
+    ? source.burstBytesPerSecond
+    : source.cruiseBytesPerSecond
+  const start = Math.max(now, source.availableAt)
+  source.availableAt = start + Math.ceil((byteLength / Math.max(1, rate)) * 1000)
+  await cancellableDelay(Math.max(0, start - now), reader)
+}
+
+async function waitForPlaybackWindow(source, reader) {
+  while (source.bufferGateClosed && !source.cancelled && !reader.cancelled) {
+    await new Promise((resolve) => {
+      let timer = null
+      const wake = () => {
+        clearTimeout(timer)
+        source.bufferWaiters.delete(wake)
+        resolve()
+      }
+      timer = setTimeout(wake, 1200)
+      timer.unref?.()
+      source.bufferWaiters.add(wake)
     })
   }
+  if (source.cancelled || reader.cancelled) throw new Error('Playback request cancelled')
+}
+
+function fetchPlaybackSegment(source, reader, start, end) {
   return new Promise((resolve, reject) => {
+    if (source.cancelled || reader.cancelled) return reject(new Error('Playback request cancelled'))
     const upstreamRequest = net.request({
       url: source.url,
       method: 'GET',
@@ -121,111 +200,199 @@ function readContinuousPlayback(source, protocolRequest) {
       credentials: 'omit',
       referrerPolicy: 'no-referrer',
     })
-    upstreamRequest.setHeader('Range', requested.header)
+    upstreamRequest.setHeader('Range', `bytes=${start}-${end}`)
     upstreamRequest.setHeader('Accept-Encoding', 'identity')
     source.requests.add(upstreamRequest)
+    reader.requests.add(upstreamRequest)
+    const expectedLength = end - start + 1
+    const chunks = []
+    let received = 0
     let settled = false
-    let streamController = null
-    let upstreamResponse = null
-    let resumeTimer = null
-    let ended = false
-
-    const cleanup = () => {
-      clearTimeout(resumeTimer)
-      source.requests.delete(upstreamRequest)
-      protocolRequest.signal?.removeEventListener('abort', abortUpstream)
-    }
-    const fail = (error) => {
-      if (ended) return
-      ended = true
-      if (settled && streamController) streamController.error(error)
-      else if (!settled) reject(error)
+    const finish = (error, value) => {
+      if (settled) return
       settled = true
-      cleanup()
+      source.requests.delete(upstreamRequest)
+      reader.requests.delete(upstreamRequest)
+      if (error) reject(error)
+      else resolve(value)
     }
-    const abortUpstream = () => upstreamRequest.abort()
-    if (protocolRequest.signal?.aborted || source.cancelled) {
-      cleanup()
-      reject(new Error('Playback request cancelled'))
-      return
-    }
-    protocolRequest.signal?.addEventListener('abort', abortUpstream, { once: true })
-
-    const resumeWhenReady = () => {
-      if (ended || source.cancelled || protocolRequest.signal?.aborted || !upstreamResponse) return
-      if (streamController?.desiredSize !== null && streamController?.desiredSize <= 0) return
-      clearTimeout(resumeTimer)
-      const delay = Math.max(0, source.availableAt - Date.now())
-      if (delay > 0) {
-        resumeTimer = setTimeout(resumeWhenReady, delay)
-        resumeTimer.unref?.()
-      } else {
-        upstreamResponse.resume()
-      }
-    }
-
     upstreamRequest.on('response', (response) => {
-      upstreamResponse = response
-      response.pause()
       if (![200, 206].includes(response.statusCode)) {
         upstreamRequest.abort()
-        fail(new Error(`Playback media request failed (${response.statusCode})`))
+        finish(new Error(`Playback media request failed (${response.statusCode})`))
         return
       }
-      if (requested.start > 0 && response.statusCode !== 206) {
+      const contentLength = Number(responseHeader(response.headers, 'content-length')) || 0
+      if (response.statusCode !== 206 && (start > 0 || contentLength > expectedLength)) {
         upstreamRequest.abort()
-        fail(new Error('Playback server ignored a seek range'))
+        finish(new Error('Playback server ignored a bounded range'))
         return
       }
       const upstreamRange = parseContentRange(responseHeader(response.headers, 'content-range'))
+      if (upstreamRange && upstreamRange.start !== start) {
+        upstreamRequest.abort()
+        finish(new Error('Playback server returned an unexpected range'))
+        return
+      }
       if (!source.size) {
-        const contentLength = Number(responseHeader(response.headers, 'content-length')) || 0
         source.size = upstreamRange?.total || (response.statusCode === 200 ? contentLength : 0)
       }
-      const body = new ReadableStream({
-        start(controller) {
-          streamController = controller
-          response.on('data', (chunk) => {
-            if (ended || !chunk?.length) return
-            response.pause()
-            controller.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength))
-            source.availableAt = Math.max(Date.now(), source.availableAt)
-              + Math.ceil((chunk.length / source.bytesPerSecond) * 1000)
-            resumeWhenReady()
-          })
-          response.on('end', () => {
-            if (ended) return
-            ended = true
-            controller.close()
-            cleanup()
-          })
-          response.on('aborted', () => {
-            if (!source.cancelled && !protocolRequest.signal?.aborted) fail(new Error('Playback response aborted'))
-            else cleanup()
-          })
-          response.on('error', fail)
-          resumeWhenReady()
-        },
-        pull() {
-          resumeWhenReady()
-        },
-        cancel() {
-          ended = true
+      source.contentType ||= responseHeader(response.headers, 'content-type') || 'audio/mpeg'
+      response.on('data', (chunk) => {
+        if (!chunk?.length || settled) return
+        received += chunk.length
+        if (received > expectedLength) {
           upstreamRequest.abort()
-          cleanup()
-        },
+          finish(new Error('Playback range exceeded its requested size'))
+          return
+        }
+        chunks.push(Buffer.from(chunk))
       })
-      settled = true
-      resolve(new Response(body, {
-        status: response.statusCode,
-        headers: playbackResponseHeaders(response),
-      }))
+      response.on('end', () => {
+        if (!received) finish(new Error('Playback range returned no data'))
+        else finish(null, {
+          bytes: Buffer.concat(chunks, received),
+          range: upstreamRange,
+        })
+      })
+      response.on('aborted', () => {
+        if (!source.cancelled && !reader.cancelled) finish(new Error('Playback response aborted'))
+        else finish(new Error('Playback request cancelled'))
+      })
+      response.on('error', (error) => finish(error))
     })
     upstreamRequest.on('error', (error) => {
-      if (!source.cancelled && !protocolRequest.signal?.aborted) fail(error)
-      else cleanup()
+      finish(source.cancelled || reader.cancelled ? new Error('Playback request cancelled') : error)
     })
     upstreamRequest.end()
+  })
+}
+
+async function readSegmentedPlayback(source, protocolRequest) {
+  if (source.cancelled) throw new Error('Playback source cancelled')
+  const rangeHeader = protocolRequest.headers.get('range') || ''
+  const requested = requestedByteRange(rangeHeader || 'bytes=0-', source.size)
+  if (source.size > 0 && requested.start >= source.size) {
+    return new Response(null, {
+      status: 416,
+      headers: { 'Content-Range': `bytes */${source.size}`, 'Accept-Ranges': 'bytes' },
+    })
+  }
+  source.activeReader?.cancel()
+  const reader = {
+    source,
+    cancelled: false,
+    requests: new Set(),
+    delayTimers: new Set(),
+    startupBytesRemaining: PLAYBACK_STARTUP_BYTES,
+    cancel() {
+      if (reader.cancelled) return
+      reader.cancelled = true
+      for (const timer of reader.delayTimers) clearTimeout(timer)
+      reader.delayTimers.clear()
+      for (const request of reader.requests) request.abort()
+      reader.requests.clear()
+      for (const wake of source.bufferWaiters) wake()
+      source.bufferWaiters.clear()
+    },
+  }
+  source.activeReader = reader
+  const abortReader = () => reader.cancel()
+  protocolRequest.signal?.addEventListener('abort', abortReader, { once: true })
+  const cleanup = () => {
+    protocolRequest.signal?.removeEventListener('abort', abortReader)
+    if (source.activeReader === reader) source.activeReader = null
+  }
+
+  let cursor = requested.start
+  let finalEnd = requested.end
+  const fetchNext = async () => {
+    if (source.cancelled || reader.cancelled) throw new Error('Playback request cancelled')
+    if (source.size > 0) finalEnd = Math.min(finalEnd, source.size - 1)
+    const remaining = finalEnd === Number.MAX_SAFE_INTEGER
+      ? Number.MAX_SAFE_INTEGER
+      : finalEnd - cursor + 1
+    const length = playbackSegmentBytes(remaining)
+    if (!length) return null
+    await reservePlaybackBandwidth(source, reader, length)
+    const result = await fetchPlaybackSegment(source, reader, cursor, cursor + length - 1)
+    if (result.bytes.length < length && !source.size) {
+      // A few CDN responses omit Content-Range/total. A short bounded response
+      // still tells us that this is the final segment, so stop cleanly instead
+      // of issuing empty ranges forever.
+      finalEnd = cursor + result.bytes.length - 1
+      source.size = finalEnd + 1
+    }
+    reader.startupBytesRemaining = Math.max(0, reader.startupBytesRemaining - result.bytes.length)
+    if (source.size > 0) finalEnd = Math.min(finalEnd, source.size - 1)
+    cursor += result.bytes.length
+    return result
+  }
+
+  let first
+  try {
+    first = await fetchNext()
+  } catch (error) {
+    cleanup()
+    throw error
+  }
+  if (!first) {
+    cleanup()
+    return new Response(null, { status: 416 })
+  }
+  const total = source.size || first.range?.total || 0
+  if (total > 0) finalEnd = Math.min(finalEnd, total - 1)
+  const responseEnd = finalEnd === Number.MAX_SAFE_INTEGER
+    ? null
+    : finalEnd
+  const partial = Boolean(rangeHeader) || requested.start > 0
+  let firstBytes = first.bytes
+  let pumping = false
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(firstBytes.buffer, firstBytes.byteOffset, firstBytes.byteLength))
+      firstBytes = null
+      if (cursor > finalEnd) {
+        controller.close()
+        cleanup()
+      }
+    },
+    async pull(controller) {
+      if (pumping || reader.cancelled) return
+      if (cursor > finalEnd) {
+        controller.close()
+        cleanup()
+        return
+      }
+      pumping = true
+      try {
+        await waitForPlaybackWindow(source, reader)
+        const segment = await fetchNext()
+        if (!segment) {
+          controller.close()
+          cleanup()
+          return
+        }
+        controller.enqueue(new Uint8Array(segment.bytes.buffer, segment.bytes.byteOffset, segment.bytes.byteLength))
+        if (cursor > finalEnd) {
+          controller.close()
+          cleanup()
+        }
+      } catch (error) {
+        cleanup()
+        if (!reader.cancelled && !source.cancelled) controller.error(error)
+      } finally {
+        pumping = false
+      }
+    },
+    cancel() {
+      reader.cancel()
+      cleanup()
+    },
+  })
+  return new Response(body, {
+    status: partial ? 206 : 200,
+    headers: playbackResponseHeaders(source, requested.start, responseEnd, total, partial),
   })
 }
 
@@ -247,7 +414,7 @@ function registerPlaybackProtocol() {
       })
     }
     const task = Promise.resolve()
-      .then(() => readContinuousPlayback(source, request))
+      .then(() => readSegmentedPlayback(source, request))
       .catch((error) => {
         if (!source.cancelled && !request.signal?.aborted) {
           console.warn('[playback-stream] Unable to read audio:', error?.message || error)
@@ -1229,6 +1396,10 @@ function registerWindowIpc() {
   ipcMain.handle('media:cancel-preload', (_event, exceptKey) => cancelMediaPreload(String(exceptKey || '')))
   ipcMain.handle('media:playback-url', (_event, payload) => playbackSourceUrl(payload))
   ipcMain.handle('media:cancel-playback', () => cancelPlaybackMediaSource())
+  ipcMain.on('media:playback-buffer', (event, payload) => {
+    if (event.sender !== mainWindow?.webContents) return
+    updatePlaybackBuffer(payload)
+  })
   ipcMain.handle('floating-lyrics:state', () => ({
     config: floatingLyricsState.config,
     bounds: floatingLyricsState.bounds,
@@ -1500,18 +1671,23 @@ function registerDataIpc() {
 
   ipcMain.handle('data:song-url', (_event, payload) => guarded(async () => {
     const id = String(payload?.id || '')
-    const requested = String(payload?.level || 'best')
-    const supported = new Set(['best', 'standard', 'higher', 'exhigh', 'lossless', 'hires', 'jyeffect', 'sky', 'dolby', 'jymaster'])
-    const level = supported.has(requested) ? requested : 'best'
+    const level = normalizeAudioQuality(payload?.level)
+    const apiLevel = requestedApiAudioQuality(level)
     // song_url_v1 already negotiates the highest level the account and track
     // can use. Probing every quality serially made the Play button wait for up
     // to nine API round trips before the browser could request one audio byte.
     try {
-      const body = await callApi('song_url_v1', { id, level: level === 'best' ? 'jymaster' : level })
-      if (body.data?.[0]?.url) return { ...body, requestedLevel: level }
+      const body = await callApi('song_url_v1', { id, level: apiLevel })
+      if (body.data?.[0]?.url) {
+        return {
+          ...body,
+          requestedLevel: level,
+          resolvedLevel: body.data[0].level || apiLevel,
+        }
+      }
     } catch {}
     const body = await callApi('song_url', { id, br: 320000 })
-    return { ...body, requestedLevel: level }
+    return { ...body, requestedLevel: level, resolvedLevel: 'exhigh' }
   }))
 
   ipcMain.handle('data:personal-fm', () => guarded(() => callApi('personal_fm')))

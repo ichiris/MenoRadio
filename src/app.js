@@ -141,6 +141,8 @@ const state = {
   currentAudioSource: null,
   currentAudioDirectUrl: '',
   playbackProxyFallbackGeneration: 0,
+  playbackBufferReportTimer: 0,
+  playbackBufferLastAt: 0,
   passiveAudioGeneration: 0,
   pendingSeekTime: null,
   ignoreAudioErrorsUntil: 0,
@@ -251,14 +253,12 @@ function updateFloatingColorFromPointer(event, field) {
 
 const audioQualities = [
   ['best', '最佳可用音质'],
-  ['standard', '标准（128 kbps）'],
-  ['higher', '较高（192 kbps）'],
-  ['exhigh', '极高（320 kbps）'],
-  ['lossless', '无损'],
-  ['hires', 'Hi-Res'],
-  ['jyeffect', '高清环绕声'],
+  ['standard', '标准（最高 128 kbps）'],
+  ['exhigh', '极高（最高 320 kbps）'],
+  ['lossless', '无损（最高 48 kHz / 16 bit）'],
+  ['hires', '高解析度无损'],
+  ['jyeffect', '高清臻音'],
   ['sky', '沉浸环绕声'],
-  ['dolby', '杜比全景声'],
   ['jymaster', '超清母带'],
 ]
 
@@ -269,6 +269,11 @@ function applyDisplaySettings() {
     localStorage.setItem('menoradio.fontFamily', state.fontFamily)
   }
   if (!['auto', '60', '80', '100', '120', '150'].includes(state.lyricScale)) state.lyricScale = 'auto'
+  const migratedQuality = { higher: 'exhigh', dolby: 'sky' }[state.audioQuality]
+  if (migratedQuality) {
+    state.audioQuality = migratedQuality
+    localStorage.setItem('menoradio.audioQuality', state.audioQuality)
+  }
   if (!audioQualities.some(([value]) => value === state.audioQuality)) state.audioQuality = 'best'
   document.documentElement.style.setProperty('--font', fontCss(state.fontFamily))
   dom.immersive.dataset.lyricScale = state.lyricScale
@@ -1266,7 +1271,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.13.12-preview'
+  const version = '0.13.13-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1844,6 +1849,48 @@ async function handlePlaybackFailure(track, generation, error) {
   }, 700)
 }
 
+function playbackBufferedAhead() {
+  const current = Math.max(0, Number(dom.audio.currentTime) || 0)
+  let end = current
+  try {
+    for (let index = 0; index < dom.audio.buffered.length; index += 1) {
+      const start = dom.audio.buffered.start(index)
+      const rangeEnd = dom.audio.buffered.end(index)
+      if (start <= current + .25 && rangeEnd >= current) end = Math.max(end, rangeEnd)
+    }
+  } catch {}
+  return Math.max(0, end - current)
+}
+
+function sendPlaybackBufferReport() {
+  if (state.playbackBufferReportTimer) {
+    window.clearTimeout(state.playbackBufferReportTimer)
+    state.playbackBufferReportTimer = 0
+  }
+  state.playbackBufferLastAt = performance.now()
+  const src = String(dom.audio.currentSrc || dom.audio.src || '')
+  if (!state.mediaLoadingOptimization || !src.startsWith('menoradio-media:')) return
+  bridge.media.updatePlaybackBuffer({
+    src,
+    bufferedAhead: playbackBufferedAhead(),
+    paused: dom.audio.paused,
+  })
+}
+
+function reportPlaybackBuffer(force = false) {
+  if (!state.mediaLoadingOptimization) return
+  if (force) {
+    sendPlaybackBufferReport()
+    return
+  }
+  if (state.playbackBufferReportTimer) return
+  const elapsed = performance.now() - state.playbackBufferLastAt
+  state.playbackBufferReportTimer = window.setTimeout(
+    sendPlaybackBufferReport,
+    Math.max(0, 160 - elapsed),
+  )
+}
+
 function resetAudioSource(generation = state.audioLoadGeneration, passive = false) {
   state.audioSourceTrackId = ''
   state.audioSourcePromise = null
@@ -1854,6 +1901,9 @@ function resetAudioSource(generation = state.audioLoadGeneration, passive = fals
   state.passiveAudioGeneration = passive ? generation : 0
   state.pendingSeekTime = null
   state.ignoreAudioErrorsUntil = performance.now() + 900
+  if (state.playbackBufferReportTimer) window.clearTimeout(state.playbackBufferReportTimer)
+  state.playbackBufferReportTimer = 0
+  state.playbackBufferLastAt = 0
   dom.audio.pause()
   dom.audio.removeAttribute('src')
   try { dom.audio.load() } catch {}
@@ -1924,6 +1974,7 @@ async function ensureAudioSource(track, generation = state.audioLoadGeneration, 
       state.audioSourceTrackId = trackId
       dom.audio.src = url
       dom.audio.load()
+      reportPlaybackBuffer(true)
       applyPendingAudioSeek()
       return true
     } catch (error) {
@@ -3973,6 +4024,7 @@ function bindEvents() {
 
   dom.audio.addEventListener('play', () => {
     setPlayIcons(true)
+    reportPlaybackBuffer(true)
     startLyricsClock()
   })
   dom.audio.addEventListener('playing', () => {
@@ -3980,17 +4032,29 @@ function bindEvents() {
     state.playingGeneration = state.audioLoadGeneration
     scheduleCurrentPlaybackCover()
     maybePreloadUpcomingCovers()
+    reportPlaybackBuffer(true)
     startLyricsClock()
   })
-  dom.audio.addEventListener('canplay', maybePreloadUpcomingCovers)
+  dom.audio.addEventListener('canplay', () => {
+    reportPlaybackBuffer(true)
+    maybePreloadUpcomingCovers()
+  })
   dom.audio.addEventListener('pause', () => {
     setPlayIcons(false)
     stopLyricsClock()
+    reportPlaybackBuffer(true)
     syncFloatingLyrics(true)
   })
-  dom.audio.addEventListener('seeked', startLyricsClock)
+  dom.audio.addEventListener('waiting', () => reportPlaybackBuffer(true))
+  dom.audio.addEventListener('seeking', () => reportPlaybackBuffer(true))
+  dom.audio.addEventListener('seeked', () => {
+    reportPlaybackBuffer(true)
+    startLyricsClock()
+  })
+  dom.audio.addEventListener('progress', () => reportPlaybackBuffer())
   dom.audio.addEventListener('loadedmetadata', () => {
     applyPendingAudioSeek()
+    reportPlaybackBuffer(true)
     const duration = dom.audio.duration || (state.current?.duration || 0) / 1000
     updateRange(dom.playerProgress, dom.audio.currentTime || 0, duration)
     updateRange(dom.immersiveProgress, dom.audio.currentTime || 0, duration)
@@ -4007,6 +4071,7 @@ function bindEvents() {
     $('#immersiveCurrent').textContent = formatTime(current)
     $('#immersiveDuration').textContent = formatTime(duration)
     updateActiveLyric(current)
+    reportPlaybackBuffer()
     if ('mediaSession' in navigator && Number.isFinite(duration) && duration > 0) {
       try { navigator.mediaSession.setPositionState({ duration, playbackRate: dom.audio.playbackRate, position: Math.min(current, duration) }) } catch {}
     }
@@ -4023,11 +4088,9 @@ function bindEvents() {
         try { dom.audio.load() } catch {}
         return
       }
-      // The paced custom stream is deliberately conservative. If Chromium or
-      // a CDN rejects that stream before playback begins, fall back once to
-      // the original URL instead of leaving the player unusable. This path is
-      // only entered after a real media error; normal optimized playback stays
-      // on the paced connection.
+      // Retry once with a fresh bounded stream. Never bypass the optimized
+      // transport with the raw CDN URL: that would turn one media error into
+      // an uncontrolled full-speed download spike.
       const generation = state.audioLoadGeneration
       if (state.mediaLoadingOptimization
         && String(dom.audio.src || '').startsWith('menoradio-media:')
@@ -4035,10 +4098,19 @@ function bindEvents() {
         && state.playbackProxyFallbackGeneration !== generation) {
         state.playbackProxyFallbackGeneration = generation
         state.ignoreAudioErrorsUntil = performance.now() + 900
-        void bridge.media.cancelPlayback().catch(() => {})
-        dom.audio.src = state.currentAudioDirectUrl
-        dom.audio.load()
-        dom.audio.play().catch((error) => {
+        const source = state.currentAudioSource || {}
+        void bridge.media.playbackUrl(state.currentAudioDirectUrl, {
+          size: source.size,
+          br: source.br,
+          time: source.time,
+          duration: state.current?.duration,
+        }).then((retryUrl) => {
+          if (generation !== state.audioLoadGeneration || !retryUrl) return
+          dom.audio.src = retryUrl
+          dom.audio.load()
+          reportPlaybackBuffer(true)
+          return dom.audio.play()
+        }).catch((error) => {
           if (generation !== state.audioLoadGeneration || isSupersededPlaybackError(error)) return
           handlePlaybackFailure(state.current, generation, playbackError(error?.message || '音频连接失败', 'network'))
         })
