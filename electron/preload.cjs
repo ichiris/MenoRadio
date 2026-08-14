@@ -54,7 +54,6 @@ contextBridge.exposeInMainWorld('menoradio', {
     clearCache: () => invoke('app:clear-cache'),
     reset: () => invoke('app:reset'),
     fonts: () => invoke('app:list-fonts'),
-    setNetworkRateLimit: (megabytesPerSecond) => invoke('app:set-network-rate-limit', megabytesPerSecond),
     openExternal: (url) => invoke('app:open-external', url),
   },
   images: {

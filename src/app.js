@@ -110,9 +110,7 @@ const state = {
   fontSearchTimer: 0,
   audioQuality: localStorage.getItem('menoradio.audioQuality') || 'best',
   audioNormalization: localStorage.getItem('menoradio.audioNormalization') === 'true',
-  mediaLoadingOptimization: localStorage.getItem('menoradio.mediaLoadingOptimization') === 'true',
-  networkRateLimit: localStorage.getItem('menoradio.networkRateLimit') || '',
-  networkRateLimitTimer: 0,
+  mediaLoadingOptimization: localStorage.getItem('menoradio.mediaLoadingOptimization') !== 'false',
   userVolume: .75,
   trackReplayGainDb: 0,
   floatingLyrics: {
@@ -1271,7 +1269,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.13.13-preview'
+  const version = '0.13.14-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1285,7 +1283,6 @@ function renderSettings() {
       <section class="settings-card quality-setting-card"><div><h3>音质</h3></div>${choicePickerMarkup('audio-quality', state.audioQuality, audioQualities, '音质')}</section>
       <section class="settings-card"><div><h3>音量均衡</h3></div><label class="setting-switch" title="按歌曲的 ReplayGain 固定调整播放增益"><input type="checkbox" data-audio-normalization ${state.audioNormalization ? 'checked' : ''}><i></i></label></section>
       <section class="settings-card"><div><h3>媒体加载优化</h3></div><label class="setting-switch"><input type="checkbox" data-media-loading-optimization ${state.mediaLoadingOptimization ? 'checked' : ''}><i></i></label></section>
-      <section class="settings-card"><div><h3>网络速率限制</h3></div><label class="setting-number network-rate-limit"><input type="number" min="0.1" max="1024" step="0.1" inputmode="decimal" placeholder="不限速" value="${attr(state.networkRateLimit)}" data-network-rate-limit><span>MB/s</span></label></section>
       <button type="button" class="settings-card settings-navigation-card" data-route-link="settings-floating"><h3>悬浮歌词</h3><svg><use href="#i-chevron"/></svg></button>
       <section class="settings-card data-management-card"><div><h3>数据管理</h3></div><div class="setting-actions"><button class="secondary-button" data-clear-cache>清理缓存(<span data-cache-size>正在计算…</span>)</button><button type="button" class="secondary-button application-reset-button" data-reset-application>重置</button></div></section>
       <section class="settings-card"><div><h3>关于</h3><p>MenoRadio <span data-app-version>${escapeHtml(version)}</span> · 开发者 <button type="button" class="settings-link" data-external="https://github.com/ichiris">@ichiris</button></p></div><div class="setting-actions"><button class="secondary-button" data-external="https://github.com/ichiris/MenoRadio">项目主页 ${icon('external')}</button><button class="secondary-button" data-external="https://github.com/neteasecloudmusicapienhanced/api-enhanced">引用开源项目 ${icon('external')}</button></div></section>
@@ -2355,7 +2352,7 @@ function seekFromRange(element) {
 async function fetchLyrics(track, generation = state.audioLoadGeneration) {
   state.lyricsLoading = true
   let lastError = null
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const body = unwrap(await bridge.data.lyrics(track.id))
       if (state.current?.id !== track.id || generation !== state.audioLoadGeneration) return
@@ -2366,8 +2363,8 @@ async function fetchLyrics(track, generation = state.audioLoadGeneration) {
       const romanized = parseLrc(body.romalrc?.lyric)
       const merged = mergeLyrics(original, translated, romanized)
       const explicitlyEmpty = body.nolyric === true || body.uncollected === true
-      if (!merged.length && !explicitlyEmpty && attempt < 2) {
-        await new Promise((resolve) => window.setTimeout(resolve, 520 + attempt * 430))
+      if (!merged.length && !explicitlyEmpty && attempt < 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 240))
         continue
       }
       state.lyricBreaks = originalDocument.breaks
@@ -2379,8 +2376,8 @@ async function fetchLyrics(track, generation = state.audioLoadGeneration) {
       return
     } catch (error) {
       lastError = error
-      if (attempt < 2) {
-        await new Promise((resolve) => window.setTimeout(resolve, 520 + attempt * 430))
+      if (attempt < 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 240))
         continue
       }
     }
@@ -4236,18 +4233,6 @@ function bindEvents() {
       }
       return
     }
-    if (event.target.matches('[data-network-rate-limit]')) {
-      const value = event.target.value.trim()
-      const parsed = Number(value)
-      if (value && (!Number.isFinite(parsed) || parsed <= 0)) return
-      state.networkRateLimit = value
-      localStorage.setItem('menoradio.networkRateLimit', value)
-      clearTimeout(state.networkRateLimitTimer)
-      state.networkRateLimitTimer = window.setTimeout(() => {
-        void bridge.app.setNetworkRateLimit(value ? parsed : 0).catch(() => {})
-      }, 240)
-      return
-    }
     if (event.target.matches('[data-playlist-search]')) {
       refreshCurrentPlaylistTrackList()
     }
@@ -4292,18 +4277,6 @@ function bindEvents() {
       state.floatingLyrics[key] = value
       configureFloatingLyrics({ [key]: value })
     }
-  })
-  dom.page.addEventListener('change', (event) => {
-    if (!event.target.matches('[data-network-rate-limit]')) return
-    const parsed = Number(event.target.value)
-    const value = Number.isFinite(parsed) && parsed > 0
-      ? String(Math.max(.1, Math.min(1024, parsed)))
-      : ''
-    event.target.value = value
-    state.networkRateLimit = value
-    localStorage.setItem('menoradio.networkRateLimit', value)
-    clearTimeout(state.networkRateLimitTimer)
-    void bridge.app.setNetworkRateLimit(value ? Number(value) : 0).catch(() => {})
   })
   dom.page.addEventListener('pointerdown', (event) => {
     const resetFloatingLyrics = event.target.closest?.('[data-reset-floating-lyrics]')
@@ -5009,7 +4982,6 @@ async function init() {
   installThumbnailLoading()
   bindEvents()
   applyDisplaySettings()
-  await bridge.app.setNetworkRateLimit(state.networkRateLimit ? Number(state.networkRateLimit) : 0).catch(() => 0)
   try {
     const snapshot = await bridge.floatingLyrics.state()
     state.floatingLyrics = { ...state.floatingLyrics, ...(snapshot?.config || {}) }

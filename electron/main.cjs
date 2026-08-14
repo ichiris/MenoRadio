@@ -1,3 +1,15 @@
+process.env.DOTENV_CONFIG_QUIET = 'true'
+
+function ignoreClosedOutputPipe(stream) {
+  stream?.on?.('error', (error) => {
+    if (error?.code === 'EPIPE') return
+    process.nextTick(() => { throw error })
+  })
+}
+
+ignoreClosedOutputPipe(process.stdout)
+ignoreClosedOutputPipe(process.stderr)
+
 const { app, BrowserWindow, ipcMain, safeStorage, shell, nativeTheme, session, screen, net, protocol } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
@@ -19,6 +31,7 @@ const {
   normalizeAudioQuality,
   requestedApiAudioQuality,
 } = require('./audio-quality.cjs')
+const { createLyricsLoader } = require('./lyrics-loader.cjs')
 
 const playbackProtocolScheme = 'menoradio-media'
 protocol.registerSchemesAsPrivileged([{
@@ -64,7 +77,6 @@ const thumbnailInflight = new Map()
 const mediaPreloadBytesPerSecond = 1024 * 1024
 let mediaPreloadBandwidthAvailableAt = 0
 let activeMediaPreload = null
-let userNetworkRateLimitBytesPerSecond = 0
 let playbackMediaSource = null
 
 function cancelPlaybackMediaSource() {
@@ -89,8 +101,8 @@ function playbackSourceUrl(payload = {}) {
     token,
     url,
     size: Math.max(0, Number(payload.size) || 0),
-    cruiseBytesPerSecond: effectivePlaybackBytesPerSecond(payload, userNetworkRateLimitBytesPerSecond),
-    burstBytesPerSecond: playbackBurstBytesPerSecond(payload, userNetworkRateLimitBytesPerSecond),
+    cruiseBytesPerSecond: effectivePlaybackBytesPerSecond(payload),
+    burstBytesPerSecond: playbackBurstBytesPerSecond(payload),
     availableAt: Date.now(),
     bufferAheadSeconds: 0,
     bufferKnown: false,
@@ -436,10 +448,7 @@ function validateMediaPreloadUrl(value) {
 function mediaPreloadDelay(byteLength) {
   const now = Date.now()
   const start = Math.max(now, mediaPreloadBandwidthAvailableAt)
-  const bytesPerSecond = userNetworkRateLimitBytesPerSecond > 0
-    ? Math.min(mediaPreloadBytesPerSecond, userNetworkRateLimitBytesPerSecond)
-    : mediaPreloadBytesPerSecond
-  mediaPreloadBandwidthAvailableAt = start + Math.ceil((byteLength / bytesPerSecond) * 1000)
+  mediaPreloadBandwidthAvailableAt = start + Math.ceil((byteLength / mediaPreloadBytesPerSecond) * 1000)
   return Math.max(0, mediaPreloadBandwidthAvailableAt - now)
 }
 
@@ -524,21 +533,6 @@ async function preloadNextMedia(payload = {}) {
   return task.promise
 }
 
-function setNetworkRateLimit(megabytesPerSecond) {
-  const value = Number(megabytesPerSecond)
-  userNetworkRateLimitBytesPerSecond = Number.isFinite(value) && value > 0
-    ? Math.round(Math.max(.1, Math.min(1024, value)) * 1024 * 1024)
-    : 0
-  // Never throttle the default Electron session. That session also carries
-  // playlist, login, lyric and image API calls, so network emulation here made
-  // the entire application appear offline. The limit is applied only by the
-  // bulk-media lanes (current audio, thumbnails and the next-cover warm-up).
-  session.defaultSession.disableNetworkEmulation()
-  return userNetworkRateLimitBytesPerSecond > 0
-    ? userNetworkRateLimitBytesPerSecond / (1024 * 1024)
-    : 0
-}
-
 function acquireThumbnailSlot() {
   if (thumbnailActiveRequests < thumbnailConcurrency) {
     thumbnailActiveRequests += 1
@@ -556,10 +550,7 @@ function releaseThumbnailSlot() {
 async function reserveThumbnailBandwidth(byteLength) {
   const now = Date.now()
   const start = Math.max(now, thumbnailBandwidthAvailableAt)
-  const bytesPerSecond = userNetworkRateLimitBytesPerSecond > 0
-    ? Math.min(thumbnailBytesPerSecond, userNetworkRateLimitBytesPerSecond)
-    : thumbnailBytesPerSecond
-  thumbnailBandwidthAvailableAt = start + Math.ceil((byteLength / bytesPerSecond) * 1000)
+  thumbnailBandwidthAvailableAt = start + Math.ceil((byteLength / thumbnailBytesPerSecond) * 1000)
   const delay = thumbnailBandwidthAvailableAt - now
   if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
 }
@@ -1001,6 +992,11 @@ async function callApi(name, params = {}, includeCookie = true) {
   return normalizeResult(result)
 }
 
+const lyricsLoader = createLyricsLoader({
+  fetchNew: (id) => callApi('lyric_new', { id }),
+  fetchLegacy: (id) => callApi('lyric', { id }),
+})
+
 function safeMessage(error) {
   const message = error?.body?.message || error?.message || '网络请求失败'
   const clean = sessionCookie ? String(message).replace(sessionCookie, '[hidden]') : String(message)
@@ -1390,7 +1386,6 @@ function registerWindowIpc() {
     if (!['https:', 'http:'].includes(parsed.protocol)) throw new Error('Unsupported URL')
     return shell.openExternal(parsed.toString())
   })
-  ipcMain.handle('app:set-network-rate-limit', (_event, value) => setNetworkRateLimit(value))
   ipcMain.handle('image:thumbnail', (_event, payload) => getThumbnail(payload?.url, payload?.forceRefresh === true))
   ipcMain.handle('media:preload-next', (_event, payload) => preloadNextMedia(payload))
   ipcMain.handle('media:cancel-preload', (_event, exceptKey) => cancelMediaPreload(String(exceptKey || '')))
@@ -1664,10 +1659,7 @@ function registerDataIpc() {
     }
   }))
 
-  ipcMain.handle('data:lyrics', (_event, id) => guarded(async () => {
-    try { return await callApi('lyric_new', { id: String(id) }) }
-    catch { return callApi('lyric', { id: String(id) }) }
-  }))
+  ipcMain.handle('data:lyrics', (_event, id) => guarded(() => lyricsLoader.load(id)))
 
   ipcMain.handle('data:song-url', (_event, payload) => guarded(async () => {
     const id = String(payload?.id || '')
