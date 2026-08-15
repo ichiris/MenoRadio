@@ -21,6 +21,7 @@ const {
   PLAYBACK_STARTUP_BYTES,
   PLAYBACK_BUFFER_LOW_SECONDS,
   PLAYBACK_BUFFER_HIGH_SECONDS,
+  resetPlaybackBufferForSeek,
   effectivePlaybackBytesPerSecond,
   playbackBurstBytesPerSecond,
   playbackSegmentBytes,
@@ -107,6 +108,7 @@ function playbackSourceUrl(payload = {}) {
     bufferAheadSeconds: 0,
     bufferKnown: false,
     bufferGateClosed: false,
+    seekPrimingUntil: 0,
     paused: false,
     bufferWaiters: new Set(),
     activeReader: null,
@@ -146,8 +148,15 @@ function updatePlaybackBuffer(payload = {}) {
   if (token !== source.token) return false
   const ahead = Math.max(0, Math.min(300, Number(payload.bufferedAhead) || 0))
   source.bufferAheadSeconds = ahead
-  source.bufferKnown = true
   source.paused = Boolean(payload.paused)
+  if (Boolean(payload.seeking) || Date.now() < source.seekPrimingUntil) {
+    source.bufferKnown = false
+    source.bufferGateClosed = false
+    for (const wake of source.bufferWaiters) wake()
+    source.bufferWaiters.clear()
+    return true
+  }
+  source.bufferKnown = true
   if (source.bufferGateClosed) {
     if (ahead <= PLAYBACK_BUFFER_LOW_SECONDS) source.bufferGateClosed = false
   } else if (ahead >= (source.paused ? PLAYBACK_BUFFER_LOW_SECONDS : PLAYBACK_BUFFER_HIGH_SECONDS)) {
@@ -157,6 +166,23 @@ function updatePlaybackBuffer(payload = {}) {
     for (const wake of source.bufferWaiters) wake()
     source.bufferWaiters.clear()
   }
+  return true
+}
+
+function preparePlaybackSeek(payload = {}) {
+  const source = playbackMediaSource
+  if (!source || source.cancelled) return false
+  let token = ''
+  try {
+    const parsed = new URL(String(payload.src || ''))
+    if (parsed.protocol !== `${playbackProtocolScheme}:` || parsed.hostname !== 'playback') return false
+    token = parsed.pathname.replace(/^\//, '')
+  } catch {
+    return false
+  }
+  if (token !== source.token || !resetPlaybackBufferForSeek(source)) return false
+  for (const wake of source.bufferWaiters) wake()
+  source.bufferWaiters.clear()
   return true
 }
 
@@ -185,6 +211,7 @@ async function reservePlaybackBandwidth(source, reader, byteLength) {
 }
 
 async function waitForPlaybackWindow(source, reader) {
+  if (Date.now() < source.seekPrimingUntil) source.bufferGateClosed = false
   while (source.bufferGateClosed && !source.cancelled && !reader.cancelled) {
     await new Promise((resolve) => {
       let timer = null
@@ -291,6 +318,14 @@ async function readSegmentedPlayback(source, protocolRequest) {
     })
   }
   source.activeReader?.cancel()
+  // A fresh byte range must never inherit the previous range's buffered-ahead
+  // decision. Chromium commonly opens this request while completing a seek.
+  source.bufferAheadSeconds = 0
+  source.bufferKnown = false
+  source.bufferGateClosed = false
+  source.availableAt = Math.min(source.availableAt, Date.now())
+  for (const wake of source.bufferWaiters) wake()
+  source.bufferWaiters.clear()
   const reader = {
     source,
     cancelled: false,
@@ -1390,6 +1425,7 @@ function registerWindowIpc() {
   ipcMain.handle('media:preload-next', (_event, payload) => preloadNextMedia(payload))
   ipcMain.handle('media:cancel-preload', (_event, exceptKey) => cancelMediaPreload(String(exceptKey || '')))
   ipcMain.handle('media:playback-url', (_event, payload) => playbackSourceUrl(payload))
+  ipcMain.handle('media:prepare-seek', (_event, payload) => preparePlaybackSeek(payload))
   ipcMain.handle('media:cancel-playback', () => cancelPlaybackMediaSource())
   ipcMain.on('media:playback-buffer', (event, payload) => {
     if (event.sender !== mainWindow?.webContents) return

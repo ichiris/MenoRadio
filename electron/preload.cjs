@@ -63,6 +63,7 @@ contextBridge.exposeInMainWorld('menoradio', {
     preloadNext: (key, urls) => invoke('media:preload-next', { key, urls }),
     cancelPreload: (exceptKey = '') => invoke('media:cancel-preload', exceptKey),
     playbackUrl: (url, metadata = {}) => invoke('media:playback-url', { url, ...metadata }),
+    preparePlaybackSeek: (src) => invoke('media:prepare-seek', { src }),
     cancelPlayback: () => invoke('media:cancel-playback'),
     updatePlaybackBuffer: (payload = {}) => ipcRenderer.send('media:playback-buffer', payload),
   },

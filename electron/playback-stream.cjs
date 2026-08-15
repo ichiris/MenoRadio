@@ -10,6 +10,7 @@ const PLAYBACK_STARTUP_BYTES = 512 * 1024
 const PLAYBACK_SEGMENT_BYTES = 128 * 1024
 const PLAYBACK_BUFFER_LOW_SECONDS = 10
 const PLAYBACK_BUFFER_HIGH_SECONDS = 25
+const PLAYBACK_SEEK_PRIMING_MS = 2800
 
 function positiveNumber(value) {
   const number = Number(value)
@@ -52,6 +53,20 @@ function playbackSegmentBytes(remaining = Number.MAX_SAFE_INTEGER) {
   return Math.min(PLAYBACK_SEGMENT_BYTES, value)
 }
 
+function resetPlaybackBufferForSeek(source, now = Date.now()) {
+  if (!source || source.cancelled) return false
+  const timestamp = Number.isFinite(Number(now)) ? Number(now) : Date.now()
+  source.bufferAheadSeconds = 0
+  source.bufferKnown = false
+  source.bufferGateClosed = false
+  source.seekPrimingUntil = timestamp + PLAYBACK_SEEK_PRIMING_MS
+  source.availableAt = Math.min(
+    Number.isFinite(Number(source.availableAt)) ? Number(source.availableAt) : timestamp,
+    timestamp,
+  )
+  return true
+}
+
 function parseByteRange(value) {
   const match = /^bytes=(\d+)-(\d*)$/i.exec(String(value || '').trim())
   if (!match) return { start: 0, end: null }
@@ -90,10 +105,12 @@ module.exports = {
   PLAYBACK_STARTUP_BYTES,
   PLAYBACK_BUFFER_LOW_SECONDS,
   PLAYBACK_BUFFER_HIGH_SECONDS,
+  PLAYBACK_SEEK_PRIMING_MS,
   playbackBytesPerSecond,
   effectivePlaybackBytesPerSecond,
   playbackBurstBytesPerSecond,
   playbackSegmentBytes,
+  resetPlaybackBufferForSeek,
   parseByteRange,
   requestedByteRange,
   parseContentRange,

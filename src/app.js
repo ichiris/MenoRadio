@@ -143,7 +143,16 @@ const state = {
   playbackBufferLastAt: 0,
   passiveAudioGeneration: 0,
   pendingSeekTime: null,
+  pendingSeekDisplayTime: null,
   pendingSeekApplied: false,
+  pendingSeekRecoveryTimer: 0,
+  pendingSeekRecoveryAttempts: 0,
+  seekPrimingUntil: 0,
+  timelineScrubbing: false,
+  timelinePreviewTime: null,
+  timelineAtEnd: false,
+  playbackIntentPlaying: false,
+  lastStablePlaybackTime: 0,
   ignoreAudioErrorsUntil: 0,
   manualLyricFrame: 0,
   manualLyricTarget: 0,
@@ -1270,7 +1279,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.13.15-preview'
+  const version = '0.14.1-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1285,18 +1294,13 @@ function renderSettings() {
       <section class="settings-card"><div><h3>音量均衡</h3></div><label class="setting-switch" title="按歌曲的 ReplayGain 固定调整播放增益"><input type="checkbox" data-audio-normalization ${state.audioNormalization ? 'checked' : ''}><i></i></label></section>
       <section class="settings-card"><div><h3>媒体加载优化</h3></div><label class="setting-switch"><input type="checkbox" data-media-loading-optimization ${state.mediaLoadingOptimization ? 'checked' : ''}><i></i></label></section>
       <button type="button" class="settings-card settings-navigation-card" data-route-link="settings-floating"><h3>悬浮歌词</h3><svg><use href="#i-chevron"/></svg></button>
-      <section class="settings-card data-management-card"><div><h3>数据管理</h3></div><div class="setting-actions"><button class="secondary-button" data-clear-cache>清理缓存(<span data-cache-size>正在计算…</span>)</button><button type="button" class="secondary-button application-reset-button" data-reset-application>重置</button></div></section>
+      <section class="settings-card data-management-card"><div><h3>数据管理</h3></div><div class="setting-actions"><button class="secondary-button" data-clear-cache>清理缓存</button><button type="button" class="secondary-button application-reset-button" data-reset-application>重置</button></div></section>
       <section class="settings-card"><div><h3>关于</h3><p>MenoRadio <span data-app-version>${escapeHtml(version)}</span> · 开发者 <button type="button" class="settings-link" data-external="https://github.com/ichiris">@ichiris</button></p></div><div class="setting-actions"><button class="secondary-button" data-external="https://github.com/ichiris/MenoRadio">项目主页 ${icon('external')}</button><button class="secondary-button" data-external="https://github.com/neteasecloudmusicapienhanced/api-enhanced">引用开源项目 ${icon('external')}</button></div></section>
     </div>
   </div>`
   bridge.app.version().then((value) => {
     if (state.route === 'settings') $('[data-app-version]', dom.page)?.replaceChildren(document.createTextNode(value))
   }).catch(() => {})
-  bridge.app.cacheSize().then((value) => {
-    if (state.route === 'settings') $('[data-cache-size]', dom.page)?.replaceChildren(document.createTextNode(formatBytes(value)))
-  }).catch(() => {
-    if (state.route === 'settings') $('[data-cache-size]', dom.page)?.replaceChildren(document.createTextNode('无法读取'))
-  })
 }
 
 function renderFloatingLyricsSettings() {
@@ -1390,7 +1394,7 @@ async function clearApplicationCache(button) {
     const result = await bridge.app.clearCache()
     const size = formatBytes(result?.clearedBytes || 0)
     if (state.route === 'settings') {
-      button.innerHTML = '清理缓存(<span data-cache-size>0B</span>)'
+      button.textContent = '清理缓存'
       button.disabled = false
     }
     toast(`已清理 ${size} 缓存`)
@@ -1564,6 +1568,7 @@ async function installAudioDeviceGuard() {
     state.audioOutputSnapshot = next
     if (dom.audio.paused || !state.current) return
     if (!previous || !next || previous !== next) {
+      state.playbackIntentPlaying = false
       dom.audio.pause()
       toast('音频设备发生变动，播放已暂停。', '已暂停')
     }
@@ -1688,7 +1693,10 @@ function restorePlaybackSession() {
   state.audioSourcePromiseGeneration = 0
   state.passiveAudioGeneration = generation
   state.pendingSeekTime = null
+  state.pendingSeekDisplayTime = null
   state.pendingSeekApplied = false
+  state.playbackIntentPlaying = false
+  state.timelineAtEnd = false
   dom.audio.pause()
   dom.audio.removeAttribute('src')
   try { dom.audio.load() } catch {}
@@ -1822,6 +1830,13 @@ function resetPlaybackFailureCycle() {
 
 async function handlePlaybackFailure(track, generation, error) {
   if (!track || state.current?.id !== track.id || generation !== state.audioLoadGeneration) return
+  // Media errors raised while the user is paused must not consume the one
+  // failure slot for this generation. Otherwise pressing Play later cannot
+  // retry the same source and may leave the track permanently inert.
+  if (!state.playbackIntentPlaying) {
+    dom.audio.pause()
+    return
+  }
   if (state.playbackFailureGeneration === generation) return
   state.playbackFailureGeneration = generation
   setPlayIcons(false)
@@ -1837,6 +1852,7 @@ async function handlePlaybackFailure(track, generation, error) {
     return
   }
   if (failureKind === 'network') {
+    state.playbackIntentPlaying = false
     dom.audio.pause()
     dom.audio.removeAttribute('src')
     try { dom.audio.load() } catch {}
@@ -1848,6 +1864,7 @@ async function handlePlaybackFailure(track, generation, error) {
   const availableIds = new Set(state.queue.map((item) => String(item.id)))
   const allUnavailable = availableIds.size > 0 && [...availableIds].every((id) => state.playbackFailedTrackIds.has(id))
   if (allUnavailable) {
+    state.playbackIntentPlaying = false
     dom.audio.pause()
     toast('播放队列中的歌曲目前都无法播放。', '已停止自动跳过', 'error')
     return
@@ -1882,6 +1899,7 @@ function sendPlaybackBufferReport() {
     src,
     bufferedAhead: playbackBufferedAhead(),
     paused: dom.audio.paused,
+    seeking: dom.audio.seeking,
   })
 }
 
@@ -1908,7 +1926,16 @@ function resetAudioSource(generation = state.audioLoadGeneration, passive = fals
   state.playbackProxyFallbackGeneration = 0
   state.passiveAudioGeneration = passive ? generation : 0
   state.pendingSeekTime = null
+  state.pendingSeekDisplayTime = null
   state.pendingSeekApplied = false
+  state.pendingSeekRecoveryAttempts = 0
+  state.seekPrimingUntil = 0
+  state.timelineScrubbing = false
+  state.timelinePreviewTime = null
+  state.timelineAtEnd = false
+  state.lastStablePlaybackTime = 0
+  if (state.pendingSeekRecoveryTimer) window.clearTimeout(state.pendingSeekRecoveryTimer)
+  state.pendingSeekRecoveryTimer = 0
   state.ignoreAudioErrorsUntil = performance.now() + 900
   if (state.playbackBufferReportTimer) window.clearTimeout(state.playbackBufferReportTimer)
   state.playbackBufferReportTimer = 0
@@ -1920,12 +1947,130 @@ function resetAudioSource(generation = state.audioLoadGeneration, passive = fals
   try { dom.audio.currentTime = 0 } catch {}
 }
 
+function playbackDuration() {
+  return Number.isFinite(dom.audio.duration) && dom.audio.duration > 0
+    ? dom.audio.duration
+    : Math.max(0, Number(state.current?.duration || 0) / 1000)
+}
+
+function clearPendingAudioSeek() {
+  state.pendingSeekTime = null
+  state.pendingSeekDisplayTime = null
+  state.pendingSeekApplied = false
+  state.pendingSeekRecoveryAttempts = 0
+  state.seekPrimingUntil = 0
+  if (state.pendingSeekRecoveryTimer) window.clearTimeout(state.pendingSeekRecoveryTimer)
+  state.pendingSeekRecoveryTimer = 0
+}
+
+function updatePlaybackPositionUi(current, duration = playbackDuration(), updateLyrics = false) {
+  const value = Math.max(0, Number(current) || 0)
+  const maximum = Math.max(1, Number(duration) || 0)
+  updateRange(dom.playerProgress, value, maximum)
+  updateRange(dom.immersiveProgress, value, maximum)
+  dom.timeLabel.textContent = `${formatTime(value)} / ${formatTime(duration)}`
+  $('#immersiveCurrent').textContent = formatTime(value)
+  $('#immersiveDuration').textContent = formatTime(duration)
+  if (updateLyrics) updateActiveLyric(value, false, true)
+}
+
+async function prepareOptimizedPlaybackSeek() {
+  const src = String(dom.audio.currentSrc || dom.audio.src || '')
+  if (!state.mediaLoadingOptimization || !src.startsWith('menoradio-media:')) return false
+  state.seekPrimingUntil = performance.now() + 2800
+  try {
+    return await bridge.media.preparePlaybackSeek(src)
+  } catch {
+    return false
+  }
+}
+
+function schedulePendingSeekRecovery(generation, attempt = 0) {
+  if (state.pendingSeekRecoveryTimer) window.clearTimeout(state.pendingSeekRecoveryTimer)
+  state.pendingSeekRecoveryTimer = window.setTimeout(async () => {
+    state.pendingSeekRecoveryTimer = 0
+    if (generation !== state.audioLoadGeneration || !Number.isFinite(state.pendingSeekTime)) return
+    const difference = Math.abs((dom.audio.currentTime || 0) - state.pendingSeekTime)
+    if (difference <= .5) {
+      finishPendingAudioSeek()
+      return
+    }
+    if (attempt >= 1) {
+      // Do not leave the visual clock pinned forever if Chromium rejected the
+      // seek. A later user action can still submit a fresh seek normally.
+      clearPendingAudioSeek()
+      state.timelineAtEnd = false
+      updatePlaybackPositionUi(dom.audio.currentTime || 0, playbackDuration(), true)
+      return
+    }
+    state.pendingSeekRecoveryAttempts = attempt + 1
+    const restarted = await restartOptimizedPlaybackAfterStalledSeek(generation)
+    if (!restarted) {
+      await prepareOptimizedPlaybackSeek()
+      if (generation !== state.audioLoadGeneration || !Number.isFinite(state.pendingSeekTime)) return
+      state.pendingSeekApplied = false
+      applyPendingAudioSeek()
+    }
+    schedulePendingSeekRecovery(generation, attempt + 1)
+  }, 2400)
+}
+
+async function restartOptimizedPlaybackAfterStalledSeek(generation) {
+  const directUrl = state.currentAudioDirectUrl
+  if (!state.mediaLoadingOptimization || !directUrl || generation !== state.audioLoadGeneration) return false
+  const source = state.currentAudioSource || {}
+  const shouldResume = state.playbackIntentPlaying
+  let retryUrl = ''
+  try {
+    retryUrl = await bridge.media.playbackUrl(directUrl, {
+      size: source.size,
+      br: source.br,
+      time: source.time,
+      duration: state.current?.duration,
+    })
+  } catch {
+    return false
+  }
+  if (!retryUrl || generation !== state.audioLoadGeneration || !Number.isFinite(state.pendingSeekTime)) return false
+  state.ignoreAudioErrorsUntil = performance.now() + 900
+  dom.audio.pause()
+  dom.audio.src = retryUrl
+  dom.audio.load()
+  reportPlaybackBuffer(true)
+  await new Promise((resolve) => {
+    if (dom.audio.readyState >= 1) {
+      resolve()
+      return
+    }
+    let timer = 0
+    const finish = () => {
+      window.clearTimeout(timer)
+      dom.audio.removeEventListener('loadedmetadata', finish)
+      dom.audio.removeEventListener('error', finish)
+      resolve()
+    }
+    timer = window.setTimeout(finish, 3200)
+    dom.audio.addEventListener('loadedmetadata', finish, { once: true })
+    dom.audio.addEventListener('error', finish, { once: true })
+  })
+  if (generation !== state.audioLoadGeneration || !Number.isFinite(state.pendingSeekTime)) return false
+  await prepareOptimizedPlaybackSeek()
+  state.pendingSeekApplied = false
+  if (!applyPendingAudioSeek()) return false
+  if (shouldResume && state.playbackIntentPlaying) {
+    try {
+      await dom.audio.play()
+    } catch (error) {
+      if (!isSupersededPlaybackError(error)) handlePlaybackFailure(state.current, generation, error)
+    }
+  }
+  return true
+}
+
 function applyPendingAudioSeek() {
   if (!Number.isFinite(state.pendingSeekTime) || !dom.audio.src || dom.audio.readyState < 1) return false
   if (state.pendingSeekApplied) return true
-  const duration = Number.isFinite(dom.audio.duration) && dom.audio.duration > 0
-    ? dom.audio.duration
-    : Math.max(0, Number(state.current?.duration || 0) / 1000)
+  const duration = playbackDuration()
   const target = Math.max(0, duration > 0 ? Math.min(duration, state.pendingSeekTime) : state.pendingSeekTime)
   try {
     // Keep the requested time authoritative until the media element confirms
@@ -1941,14 +2086,16 @@ function applyPendingAudioSeek() {
 }
 
 function playbackClockTime() {
-  return Number.isFinite(state.pendingSeekTime) ? state.pendingSeekTime : (dom.audio.currentTime || 0)
+  if (state.timelineScrubbing && Number.isFinite(state.timelinePreviewTime)) return state.timelinePreviewTime
+  if (Number.isFinite(state.pendingSeekDisplayTime)) return state.pendingSeekDisplayTime
+  if (state.timelineAtEnd && dom.audio.paused) return playbackDuration()
+  return dom.audio.currentTime || 0
 }
 
 function finishPendingAudioSeek() {
   if (!Number.isFinite(state.pendingSeekTime) || !state.pendingSeekApplied) return false
   if (Math.abs((dom.audio.currentTime || 0) - state.pendingSeekTime) > .35) return false
-  state.pendingSeekTime = null
-  state.pendingSeekApplied = false
+  clearPendingAudioSeek()
   return true
 }
 
@@ -1957,7 +2104,7 @@ async function ensureAudioSource(track, generation = state.audioLoadGeneration, 
   const trackId = String(track.id)
   if (!options.passive) state.passiveAudioGeneration = 0
   if (dom.audio.src && state.audioSourceTrackId === trackId) {
-    applyPendingAudioSeek()
+    if (!options.deferSeek) applyPendingAudioSeek()
     return true
   }
   if (state.audioSourcePromise && state.audioSourcePromiseGeneration === generation) {
@@ -2001,7 +2148,7 @@ async function ensureAudioSource(track, generation = state.audioLoadGeneration, 
       dom.audio.src = url
       dom.audio.load()
       reportPlaybackBuffer(true)
-      applyPendingAudioSeek()
+      if (!options.deferSeek) applyPendingAudioSeek()
       return true
     } catch (error) {
       if (String(state.current?.id) !== trackId || generation !== state.audioLoadGeneration) return false
@@ -2025,29 +2172,36 @@ async function ensureAudioSource(track, generation = state.audioLoadGeneration, 
 
 async function seekCurrentTrack(seconds) {
   if (!state.current || !Number.isFinite(seconds)) return false
-  const duration = Number.isFinite(dom.audio.duration) && dom.audio.duration > 0
-    ? dom.audio.duration
-    : Math.max(0, Number(state.current.duration || 0) / 1000)
-  const target = Math.max(0, duration > 0 ? Math.min(duration, seconds) : seconds)
+  const duration = playbackDuration()
+  const requestedTarget = Math.max(0, duration > 0 ? Math.min(duration, seconds) : seconds)
+  const atEnd = duration > 0 && requestedTarget >= duration - .25
+  const target = atEnd ? Math.max(0, duration - .05) : requestedTarget
+  state.timelineAtEnd = atEnd
   state.pendingSeekTime = target
+  state.pendingSeekDisplayTime = requestedTarget
   state.pendingSeekApplied = false
-  updateRange(dom.playerProgress, target, Math.max(1, duration))
-  updateRange(dom.immersiveProgress, target, Math.max(1, duration))
-  dom.timeLabel.textContent = `${formatTime(target)} / ${formatTime(duration)}`
-  $('#immersiveCurrent').textContent = formatTime(target)
-  $('#immersiveDuration').textContent = formatTime(duration)
-  updateActiveLyric(target, false, true)
+  state.pendingSeekRecoveryAttempts = 0
+  state.timelineScrubbing = false
+  state.timelinePreviewTime = null
+  updatePlaybackPositionUi(requestedTarget, duration, true)
   const generation = state.audioLoadGeneration
-  const ready = await ensureAudioSource(state.current, generation, { passive: dom.audio.paused })
+  const ready = await ensureAudioSource(state.current, generation, {
+    passive: !state.playbackIntentPlaying,
+    deferSeek: true,
+  })
   if (generation !== state.audioLoadGeneration || !ready) return false
+  await prepareOptimizedPlaybackSeek()
+  if (generation !== state.audioLoadGeneration) return false
   applyPendingAudioSeek()
-  if (!dom.audio.paused) startLyricsClock()
+  schedulePendingSeekRecovery(generation)
+  if (state.playbackIntentPlaying && !dom.audio.paused) startLyricsClock()
   return true
 }
 
 async function loadTrack(track, autoplay = true) {
   if (!track) return
   const generation = ++state.audioLoadGeneration
+  state.playbackIntentPlaying = Boolean(autoplay)
   stopLyricsClock()
   const loadId = track.id
   cancelPendingCoverPreloadsExcept(playbackCoverUrl(track.cover))
@@ -2247,8 +2401,32 @@ async function togglePlayback() {
     if (tracks?.length) playTracks(tracks, 0)
     return
   }
+  const duration = playbackDuration()
+  const reachedEnd = state.timelineAtEnd
+    || dom.audio.ended
+    || (duration > 0 && (dom.audio.currentTime || 0) >= duration - .25)
+  if (dom.audio.paused && reachedEnd) {
+    state.playbackIntentPlaying = true
+    state.timelineAtEnd = false
+    clearPendingAudioSeek()
+    if (state.playMode !== 'repeat-one') {
+      await nextTrack(1)
+      return
+    }
+    const generation = state.audioLoadGeneration
+    const sought = await seekCurrentTrack(0)
+    if (!sought || generation !== state.audioLoadGeneration || !state.playbackIntentPlaying) return
+    try {
+      await dom.audio.play()
+    } catch (error) {
+      if (generation !== state.audioLoadGeneration || isSupersededPlaybackError(error)) return
+      handlePlaybackFailure(state.current, generation, error)
+    }
+    return
+  }
   if (!dom.audio.src) {
     const generation = state.audioLoadGeneration
+    state.playbackIntentPlaying = true
     updateNowPlaying()
     if (!state.lyricsLoading && state.lyricsReadyGeneration !== generation) void fetchLyrics(state.current, generation)
     state.passiveAudioGeneration = 0
@@ -2259,20 +2437,28 @@ async function togglePlayback() {
     } catch (error) {
       if (generation !== state.audioLoadGeneration) return
       if (error?.name === 'AbortError' || /interrupted by a new load|interrupted by a call to pause/i.test(String(error?.message || ''))) return
-      if (error?.name === 'NotAllowedError') return toast(error.message, '无法开始播放', 'error')
+      if (error?.name === 'NotAllowedError') {
+        state.playbackIntentPlaying = false
+        return toast(error.message, '无法开始播放', 'error')
+      }
       handlePlaybackFailure(state.current, generation, error)
     }
   } else if (dom.audio.paused) {
     const generation = state.audioLoadGeneration
+    state.playbackIntentPlaying = true
     if (!state.lyricsLoading && state.lyricsReadyGeneration !== generation) void fetchLyrics(state.current, generation)
     state.passiveAudioGeneration = 0
     dom.audio.play().catch((error) => {
       if (generation !== state.audioLoadGeneration) return
       if (error?.name === 'AbortError' || /interrupted by a new load|interrupted by a call to pause/i.test(String(error?.message || ''))) return
-      if (error?.name === 'NotAllowedError') return toast(error.message, '无法开始播放', 'error')
+      if (error?.name === 'NotAllowedError') {
+        state.playbackIntentPlaying = false
+        return toast(error.message, '无法开始播放', 'error')
+      }
       handlePlaybackFailure(state.current, generation, error)
     })
   } else {
+    state.playbackIntentPlaying = false
     dom.audio.pause()
   }
 }
@@ -2302,17 +2488,32 @@ async function nextTrack(direction = 1, options = {}) {
   const step = direction < 0 ? -1 : 1
   state.queueIndex = ((state.queueIndex + step) % state.queue.length + state.queue.length) % state.queue.length
   renderQueue()
-  loadTrack(state.queue[state.queueIndex], true)
+  return loadTrack(state.queue[state.queueIndex], true)
 }
 
-function onTrackEnded() {
+async function onTrackEnded() {
+  if (!state.playbackIntentPlaying) {
+    state.timelineAtEnd = true
+    clearPendingAudioSeek()
+    dom.audio.pause()
+    updatePlaybackPositionUi(playbackDuration(), playbackDuration(), true)
+    return
+  }
   if (state.radioMode) {
-    nextTrack(1)
+    await nextTrack(1)
   } else if (state.playMode === 'repeat-one') {
-    dom.audio.currentTime = 0
-    dom.audio.play()
+    state.timelineAtEnd = false
+    const generation = state.audioLoadGeneration
+    const sought = await seekCurrentTrack(0)
+    if (sought && generation === state.audioLoadGeneration && state.playbackIntentPlaying) {
+      await dom.audio.play().catch((error) => {
+        if (generation === state.audioLoadGeneration && !isSupersededPlaybackError(error)) {
+          handlePlaybackFailure(state.current, generation, error)
+        }
+      })
+    }
   } else {
-    nextTrack(1)
+    await nextTrack(1)
   }
 }
 
@@ -2369,14 +2570,34 @@ function updatePlayModeButtons() {
   }
 }
 
-function seekFromRange(element) {
+function rangeSeekTime(element) {
   if (!state.current) return
-  const duration = Number.isFinite(dom.audio.duration) && dom.audio.duration > 0
-    ? dom.audio.duration
-    : Math.max(0, Number(state.current.duration || 0) / 1000)
+  const duration = playbackDuration()
   const maximum = Number(element.max)
-  if (!(duration > 0) || !(maximum > 0)) return
-  void seekCurrentTrack((Number(element.value) / maximum) * duration)
+  if (!(duration > 0) || !(maximum > 0)) return null
+  return Math.max(0, Math.min(duration, (Number(element.value) / maximum) * duration))
+}
+
+function previewSeekFromRange(element) {
+  const target = rangeSeekTime(element)
+  if (!Number.isFinite(target)) return
+  state.timelineScrubbing = true
+  state.timelinePreviewTime = target
+  updatePlaybackPositionUi(target, playbackDuration(), true)
+}
+
+function commitSeekFromRange(element) {
+  const target = rangeSeekTime(element)
+  state.timelineScrubbing = false
+  state.timelinePreviewTime = null
+  if (Number.isFinite(target)) void seekCurrentTrack(target)
+}
+
+function cancelTimelineScrub() {
+  if (!state.timelineScrubbing) return
+  state.timelineScrubbing = false
+  state.timelinePreviewTime = null
+  updatePlaybackPositionUi(playbackClockTime(), playbackDuration(), true)
 }
 
 async function fetchLyrics(track, generation = state.audioLoadGeneration) {
@@ -4025,8 +4246,12 @@ function bindEvents() {
     $('#immersiveVolume').setAttribute('aria-expanded', String(open))
   })
   $('#immersiveVolumePopover').addEventListener('click', (event) => event.stopPropagation())
-  dom.playerProgress.addEventListener('input', () => seekFromRange(dom.playerProgress))
-  dom.immersiveProgress.addEventListener('input', () => seekFromRange(dom.immersiveProgress))
+  for (const range of [dom.playerProgress, dom.immersiveProgress]) {
+    range.addEventListener('pointerdown', () => { state.timelineScrubbing = true })
+    range.addEventListener('input', () => previewSeekFromRange(range))
+    range.addEventListener('change', () => commitSeekFromRange(range))
+    range.addEventListener('pointercancel', cancelTimelineScrub)
+  }
   $('#translationToggle').addEventListener('click', () => { state.showTranslation = !state.showTranslation; updateLyricVisibility() })
   $('#fontSizeToggle').addEventListener('click', (event) => {
     event.stopPropagation()
@@ -4048,11 +4273,19 @@ function bindEvents() {
   })
 
   dom.audio.addEventListener('play', () => {
+    if (!state.playbackIntentPlaying) {
+      dom.audio.pause()
+      return
+    }
     setPlayIcons(true)
     reportPlaybackBuffer(true)
     startLyricsClock()
   })
   dom.audio.addEventListener('playing', () => {
+    if (!state.playbackIntentPlaying) {
+      dom.audio.pause()
+      return
+    }
     resetPlaybackFailureCycle()
     state.playingGeneration = state.audioLoadGeneration
     scheduleCurrentPlaybackCover()
@@ -4076,29 +4309,30 @@ function bindEvents() {
     const completedPendingSeek = finishPendingAudioSeek()
     reportPlaybackBuffer(true)
     if (completedPendingSeek) updateActiveLyric(dom.audio.currentTime || 0, false, true)
-    startLyricsClock()
+    if (state.playbackIntentPlaying && !dom.audio.paused) startLyricsClock()
   })
   dom.audio.addEventListener('progress', () => reportPlaybackBuffer())
   dom.audio.addEventListener('loadedmetadata', () => {
     applyPendingAudioSeek()
     reportPlaybackBuffer(true)
-    const duration = dom.audio.duration || (state.current?.duration || 0) / 1000
-    const current = playbackClockTime()
-    updateRange(dom.playerProgress, current, duration)
-    updateRange(dom.immersiveProgress, current, duration)
+    if (!state.timelineScrubbing) updatePlaybackPositionUi(playbackClockTime(), playbackDuration())
   })
   dom.audio.addEventListener('ratechange', startLyricsClock)
   dom.audio.addEventListener('volumechange', updateVolumeUi)
   dom.audio.addEventListener('ended', onTrackEnded)
   dom.audio.addEventListener('timeupdate', () => {
     finishPendingAudioSeek()
+    const actualCurrent = dom.audio.currentTime || 0
+    if (!state.timelineScrubbing && !Number.isFinite(state.pendingSeekTime) && actualCurrent > 0) {
+      state.lastStablePlaybackTime = actualCurrent
+    }
+    if (state.timelineScrubbing) {
+      reportPlaybackBuffer()
+      return
+    }
     const current = playbackClockTime()
-    const duration = dom.audio.duration || (state.current?.duration || 0) / 1000
-    updateRange(dom.playerProgress, current, duration)
-    updateRange(dom.immersiveProgress, current, duration)
-    dom.timeLabel.textContent = `${formatTime(current)} / ${formatTime(duration)}`
-    $('#immersiveCurrent').textContent = formatTime(current)
-    $('#immersiveDuration').textContent = formatTime(duration)
+    const duration = playbackDuration()
+    updatePlaybackPositionUi(current, duration)
     updateActiveLyric(current)
     reportPlaybackBuffer()
     if ('mediaSession' in navigator && Number.isFinite(duration) && duration > 0) {
@@ -4108,6 +4342,12 @@ function bindEvents() {
   dom.audio.addEventListener('error', () => {
     if (performance.now() < state.ignoreAudioErrorsUntil) return
     if (dom.audio.src && state.current && dom.audio.error) {
+      if (!state.playbackIntentPlaying && state.timelineAtEnd) {
+        dom.audio.pause()
+        clearPendingAudioSeek()
+        updatePlaybackPositionUi(playbackDuration(), playbackDuration(), true)
+        return
+      }
       if (state.passiveAudioGeneration === state.audioLoadGeneration && dom.audio.paused) {
         state.audioSourceTrackId = ''
         state.audioSourcePromise = null
@@ -4121,6 +4361,7 @@ function bindEvents() {
       // transport with the raw CDN URL: that would turn one media error into
       // an uncontrolled full-speed download spike.
       const generation = state.audioLoadGeneration
+      const shouldResume = state.playbackIntentPlaying
       if (state.mediaLoadingOptimization
         && String(dom.audio.src || '').startsWith('menoradio-media:')
         && state.currentAudioDirectUrl
@@ -4128,6 +4369,15 @@ function bindEvents() {
         state.playbackProxyFallbackGeneration = generation
         state.ignoreAudioErrorsUntil = performance.now() + 900
         const source = state.currentAudioSource || {}
+        const duration = playbackDuration()
+        const retryTarget = Number.isFinite(state.pendingSeekTime)
+          ? state.pendingSeekTime
+          : Math.min(Math.max(0, state.lastStablePlaybackTime || dom.audio.currentTime || 0), Math.max(0, duration - .05))
+        if (retryTarget > .05) {
+          state.pendingSeekTime = retryTarget
+          state.pendingSeekDisplayTime = state.timelineAtEnd ? duration : retryTarget
+          state.pendingSeekApplied = false
+        }
         void bridge.media.playbackUrl(state.currentAudioDirectUrl, {
           size: source.size,
           br: source.br,
@@ -4138,7 +4388,9 @@ function bindEvents() {
           dom.audio.src = retryUrl
           dom.audio.load()
           reportPlaybackBuffer(true)
-          return dom.audio.play()
+          applyPendingAudioSeek()
+          if (shouldResume && state.playbackIntentPlaying) return dom.audio.play()
+          return undefined
         }).catch((error) => {
           if (generation !== state.audioLoadGeneration || isSupersededPlaybackError(error)) return
           handlePlaybackFailure(state.current, generation, playbackError(error?.message || '音频连接失败', 'network'))
@@ -4767,21 +5019,23 @@ function bindEvents() {
 
   if ('mediaSession' in navigator) {
     const actions = {
-      play: () => dom.audio.play(),
-      pause: () => dom.audio.pause(),
+      play: () => {
+        if (dom.audio.paused) void togglePlayback()
+      },
+      pause: () => {
+        state.playbackIntentPlaying = false
+        dom.audio.pause()
+      },
       previoustrack: () => nextTrack(-1), nexttrack: () => nextTrack(1),
       seekto: (details) => {
         if (details.seekTime == null) return
-        dom.audio.currentTime = details.seekTime
-        startLyricsClock()
+        void seekCurrentTrack(details.seekTime)
       },
       seekbackward: (details) => {
-        dom.audio.currentTime = Math.max(0, dom.audio.currentTime - (details.seekOffset || 10))
-        startLyricsClock()
+        void seekCurrentTrack(Math.max(0, playbackClockTime() - (details.seekOffset || 10)))
       },
       seekforward: (details) => {
-        dom.audio.currentTime = Math.min(dom.audio.duration || Infinity, dom.audio.currentTime + (details.seekOffset || 10))
-        startLyricsClock()
+        void seekCurrentTrack(Math.min(playbackDuration(), playbackClockTime() + (details.seekOffset || 10)))
       },
     }
     for (const [action, handler] of Object.entries(actions)) {

@@ -5,10 +5,12 @@ const {
   PLAYBACK_STARTUP_BYTES,
   PLAYBACK_BUFFER_LOW_SECONDS,
   PLAYBACK_BUFFER_HIGH_SECONDS,
+  PLAYBACK_SEEK_PRIMING_MS,
   playbackBytesPerSecond,
   effectivePlaybackBytesPerSecond,
   playbackBurstBytesPerSecond,
   playbackSegmentBytes,
+  resetPlaybackBufferForSeek,
   requestedByteRange,
   parseContentRange,
 } = require('../electron/playback-stream.cjs')
@@ -59,6 +61,22 @@ test('network segments are small and buffer watermarks stay ordered', () => {
   assert.equal(playbackSegmentBytes(4096), 4096)
   assert.equal(PLAYBACK_STARTUP_BYTES, 512 * 1024)
   assert.ok(PLAYBACK_BUFFER_LOW_SECONDS < PLAYBACK_BUFFER_HIGH_SECONDS)
+})
+
+test('seeking clears stale buffered-ahead state and temporarily opens the gate', () => {
+  const source = {
+    bufferAheadSeconds: 42,
+    bufferKnown: true,
+    bufferGateClosed: true,
+    availableAt: 5000,
+    cancelled: false,
+  }
+  assert.equal(resetPlaybackBufferForSeek(source, 4000), true)
+  assert.equal(source.bufferAheadSeconds, 0)
+  assert.equal(source.bufferKnown, false)
+  assert.equal(source.bufferGateClosed, false)
+  assert.equal(source.availableAt, 4000)
+  assert.equal(source.seekPrimingUntil, 4000 + PLAYBACK_SEEK_PRIMING_MS)
 })
 
 test('current NetEase quality levels pass through and legacy values migrate', () => {
