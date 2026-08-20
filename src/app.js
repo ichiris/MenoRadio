@@ -138,7 +138,9 @@ const state = {
   audioSourcePromiseGeneration: 0,
   currentAudioSource: null,
   currentAudioDirectUrl: '',
+  optimizedPlaybackInPlaceRetryGeneration: 0,
   playbackProxyFallbackGeneration: 0,
+  optimizedPlaybackRecoveryStartedAt: 0,
   playbackBufferReportTimer: 0,
   playbackBufferLastAt: 0,
   passiveAudioGeneration: 0,
@@ -152,7 +154,8 @@ const state = {
   timelinePreviewTime: null,
   timelineAtEnd: false,
   playbackIntentPlaying: false,
-  lastStablePlaybackTime: 0,
+  lastStablePlaybackTime: null,
+  playbackStarving: false,
   ignoreAudioErrorsUntil: 0,
   manualLyricFrame: 0,
   manualLyricTarget: 0,
@@ -1844,6 +1847,16 @@ async function handlePlaybackFailure(track, generation, error) {
   const retries = state.playbackRetryCounts.get(trackId) || 0
   const failureKind = playbackFailureKind(error)
   clearTimeout(state.playbackFailureTimer)
+  const optimizedCurrentStream = state.mediaLoadingOptimization
+    && String(dom.audio.currentSrc || dom.audio.src || '').startsWith('menoradio-media:')
+  // A bounded current stream has its own in-place recovery path. Re-running
+  // loadTrack here resolves the song again, replaces the token and can restart
+  // it from zero after a transient proxy/network interruption.
+  if (failureKind === 'network' && optimizedCurrentStream) {
+    state.playbackIntentPlaying = false
+    dom.audio.pause()
+    return
+  }
   if (retries < 1) {
     state.playbackRetryCounts.set(trackId, retries + 1)
     state.playbackFailureTimer = window.setTimeout(() => {
@@ -1900,6 +1913,9 @@ function sendPlaybackBufferReport() {
     bufferedAhead: playbackBufferedAhead(),
     paused: dom.audio.paused,
     seeking: dom.audio.seeking,
+    readyState: dom.audio.readyState,
+    starving: state.playbackStarving
+      || (state.playbackIntentPlaying && !dom.audio.paused && dom.audio.readyState <= 2),
   })
 }
 
@@ -1923,7 +1939,9 @@ function resetAudioSource(generation = state.audioLoadGeneration, passive = fals
   state.audioSourcePromiseGeneration = 0
   state.currentAudioSource = null
   state.currentAudioDirectUrl = ''
+  state.optimizedPlaybackInPlaceRetryGeneration = 0
   state.playbackProxyFallbackGeneration = 0
+  state.optimizedPlaybackRecoveryStartedAt = 0
   state.passiveAudioGeneration = passive ? generation : 0
   state.pendingSeekTime = null
   state.pendingSeekDisplayTime = null
@@ -1933,7 +1951,8 @@ function resetAudioSource(generation = state.audioLoadGeneration, passive = fals
   state.timelineScrubbing = false
   state.timelinePreviewTime = null
   state.timelineAtEnd = false
-  state.lastStablePlaybackTime = 0
+  state.lastStablePlaybackTime = null
+  state.playbackStarving = false
   if (state.pendingSeekRecoveryTimer) window.clearTimeout(state.pendingSeekRecoveryTimer)
   state.pendingSeekRecoveryTimer = 0
   state.ignoreAudioErrorsUntil = performance.now() + 900
@@ -2016,32 +2035,24 @@ function schedulePendingSeekRecovery(generation, attempt = 0) {
 }
 
 async function restartOptimizedPlaybackAfterStalledSeek(generation) {
-  const directUrl = state.currentAudioDirectUrl
-  if (!state.mediaLoadingOptimization || !directUrl || generation !== state.audioLoadGeneration) return false
-  const source = state.currentAudioSource || {}
-  const shouldResume = state.playbackIntentPlaying
-  let retryUrl = ''
-  try {
-    retryUrl = await bridge.media.playbackUrl(directUrl, {
-      size: source.size,
-      br: source.br,
-      time: source.time,
-      duration: state.current?.duration,
-    })
-  } catch {
-    return false
-  }
-  if (!retryUrl || generation !== state.audioLoadGeneration || !Number.isFinite(state.pendingSeekTime)) return false
-  state.ignoreAudioErrorsUntil = performance.now() + 900
-  dom.audio.pause()
-  dom.audio.src = retryUrl
-  dom.audio.load()
-  reportPlaybackBuffer(true)
-  await new Promise((resolve) => {
-    if (dom.audio.readyState >= 1) {
-      resolve()
-      return
-    }
+  if (!Number.isFinite(state.pendingSeekTime)) return false
+  return recoverOptimizedPlayback(generation, {
+    freshToken: true,
+    target: state.pendingSeekTime,
+    shouldResume: state.playbackIntentPlaying,
+  })
+}
+
+function optimizedPlaybackRecoveryTarget() {
+  const duration = playbackDuration()
+  const candidates = [state.pendingSeekTime, state.lastStablePlaybackTime, dom.audio.currentTime]
+  const candidate = candidates.find((value) => Number.isFinite(value)) ?? 0
+  return Math.min(Math.max(0, Number(candidate)), Math.max(0, duration - .05))
+}
+
+function waitForAudioMetadata(generation, timeout = 3200) {
+  if (generation !== state.audioLoadGeneration || dom.audio.readyState >= 1) return Promise.resolve()
+  return new Promise((resolve) => {
     let timer = 0
     const finish = () => {
       window.clearTimeout(timer)
@@ -2049,19 +2060,64 @@ async function restartOptimizedPlaybackAfterStalledSeek(generation) {
       dom.audio.removeEventListener('error', finish)
       resolve()
     }
-    timer = window.setTimeout(finish, 3200)
+    timer = window.setTimeout(finish, timeout)
     dom.audio.addEventListener('loadedmetadata', finish, { once: true })
     dom.audio.addEventListener('error', finish, { once: true })
   })
-  if (generation !== state.audioLoadGeneration || !Number.isFinite(state.pendingSeekTime)) return false
+}
+
+async function recoverOptimizedPlayback(generation, options = {}) {
+  const directUrl = state.currentAudioDirectUrl
+  const currentSrc = String(dom.audio.currentSrc || dom.audio.src || '')
+  if (!state.mediaLoadingOptimization
+    || !directUrl
+    || generation !== state.audioLoadGeneration
+    || (!options.freshToken && !currentSrc.startsWith('menoradio-media:'))) return false
+  const target = Number.isFinite(options.target) ? Math.max(0, Number(options.target)) : optimizedPlaybackRecoveryTarget()
+  const shouldResume = Boolean(options.shouldResume)
+  let retryUrl = currentSrc
+  if (options.freshToken) {
+    const source = state.currentAudioSource || {}
+    try {
+      retryUrl = await bridge.media.playbackUrl(directUrl, {
+        size: source.size,
+        br: source.br,
+        time: source.time,
+        duration: state.current?.duration,
+      })
+    } catch {
+      return false
+    }
+  } else {
+    await prepareOptimizedPlaybackSeek()
+  }
+  if (!retryUrl || generation !== state.audioLoadGeneration) return false
+
+  const duration = playbackDuration()
+  state.pendingSeekTime = Math.min(target, Math.max(0, duration - .05))
+  state.pendingSeekDisplayTime = state.pendingSeekTime
+  state.pendingSeekApplied = false
+  state.pendingSeekRecoveryAttempts = 0
+  state.timelineAtEnd = false
+  state.playbackStarving = true
+  state.optimizedPlaybackRecoveryStartedAt = performance.now()
+  state.ignoreAudioErrorsUntil = performance.now() + 1000
+  dom.audio.pause()
+  if (options.freshToken) dom.audio.src = retryUrl
+  dom.audio.load()
+  reportPlaybackBuffer(true)
+  await waitForAudioMetadata(generation)
+  if (generation !== state.audioLoadGeneration) return false
   await prepareOptimizedPlaybackSeek()
+  if (generation !== state.audioLoadGeneration) return false
   state.pendingSeekApplied = false
   if (!applyPendingAudioSeek()) return false
+  schedulePendingSeekRecovery(generation)
   if (shouldResume && state.playbackIntentPlaying) {
     try {
       await dom.audio.play()
     } catch (error) {
-      if (!isSupersededPlaybackError(error)) handlePlaybackFailure(state.current, generation, error)
+      if (!isSupersededPlaybackError(error)) return false
     }
   }
   return true
@@ -4287,6 +4343,7 @@ function bindEvents() {
       return
     }
     resetPlaybackFailureCycle()
+    state.playbackStarving = false
     state.playingGeneration = state.audioLoadGeneration
     scheduleCurrentPlaybackCover()
     maybePreloadUpcomingCovers()
@@ -4294,6 +4351,7 @@ function bindEvents() {
     startLyricsClock()
   })
   dom.audio.addEventListener('canplay', () => {
+    state.playbackStarving = false
     reportPlaybackBuffer(true)
     maybePreloadUpcomingCovers()
   })
@@ -4303,10 +4361,21 @@ function bindEvents() {
     reportPlaybackBuffer(true)
     syncFloatingLyrics(true)
   })
-  dom.audio.addEventListener('waiting', () => reportPlaybackBuffer(true))
-  dom.audio.addEventListener('seeking', () => reportPlaybackBuffer(true))
+  dom.audio.addEventListener('waiting', () => {
+    state.playbackStarving = true
+    reportPlaybackBuffer(true)
+  })
+  dom.audio.addEventListener('stalled', () => {
+    state.playbackStarving = true
+    reportPlaybackBuffer(true)
+  })
+  dom.audio.addEventListener('seeking', () => {
+    state.playbackStarving = true
+    reportPlaybackBuffer(true)
+  })
   dom.audio.addEventListener('seeked', () => {
     const completedPendingSeek = finishPendingAudioSeek()
+    state.playbackStarving = dom.audio.readyState <= 2
     reportPlaybackBuffer(true)
     if (completedPendingSeek) updateActiveLyric(dom.audio.currentTime || 0, false, true)
     if (state.playbackIntentPlaying && !dom.audio.paused) startLyricsClock()
@@ -4325,6 +4394,13 @@ function bindEvents() {
     const actualCurrent = dom.audio.currentTime || 0
     if (!state.timelineScrubbing && !Number.isFinite(state.pendingSeekTime) && actualCurrent > 0) {
       state.lastStablePlaybackTime = actualCurrent
+      state.playbackStarving = false
+      if (state.optimizedPlaybackRecoveryStartedAt
+        && performance.now() - state.optimizedPlaybackRecoveryStartedAt > 8000) {
+        state.optimizedPlaybackInPlaceRetryGeneration = 0
+        state.playbackProxyFallbackGeneration = 0
+        state.optimizedPlaybackRecoveryStartedAt = 0
+      }
     }
     if (state.timelineScrubbing) {
       reportPlaybackBuffer()
@@ -4342,6 +4418,10 @@ function bindEvents() {
   dom.audio.addEventListener('error', () => {
     if (performance.now() < state.ignoreAudioErrorsUntil) return
     if (dom.audio.src && state.current && dom.audio.error) {
+      const mediaErrorCode = Number(dom.audio.error.code || 0)
+      // Chromium emits MEDIA_ERR_ABORTED when a seek or a replacement Range
+      // intentionally cancels the previous request. It is not a network fault.
+      if (mediaErrorCode === 1) return
       if (!state.playbackIntentPlaying && state.timelineAtEnd) {
         dom.audio.pause()
         clearPendingAudioSeek()
@@ -4357,47 +4437,31 @@ function bindEvents() {
         try { dom.audio.load() } catch {}
         return
       }
-      // Retry once with a fresh bounded stream. Never bypass the optimized
-      // transport with the raw CDN URL: that would turn one media error into
-      // an uncontrolled full-speed download spike.
       const generation = state.audioLoadGeneration
       const shouldResume = state.playbackIntentPlaying
       if (state.mediaLoadingOptimization
-        && String(dom.audio.src || '').startsWith('menoradio-media:')
-        && state.currentAudioDirectUrl
-        && state.playbackProxyFallbackGeneration !== generation) {
-        state.playbackProxyFallbackGeneration = generation
+        && String(dom.audio.currentSrc || dom.audio.src || '').startsWith('menoradio-media:')
+        && state.currentAudioDirectUrl) {
+        const retryTarget = optimizedPlaybackRecoveryTarget()
         state.ignoreAudioErrorsUntil = performance.now() + 900
-        const source = state.currentAudioSource || {}
-        const duration = playbackDuration()
-        const retryTarget = Number.isFinite(state.pendingSeekTime)
-          ? state.pendingSeekTime
-          : Math.min(Math.max(0, state.lastStablePlaybackTime || dom.audio.currentTime || 0), Math.max(0, duration - .05))
-        if (retryTarget > .05) {
-          state.pendingSeekTime = retryTarget
-          state.pendingSeekDisplayTime = state.timelineAtEnd ? duration : retryTarget
-          state.pendingSeekApplied = false
+        let freshToken = false
+        if (state.optimizedPlaybackInPlaceRetryGeneration !== generation) {
+          state.optimizedPlaybackInPlaceRetryGeneration = generation
+        } else if (state.playbackProxyFallbackGeneration !== generation) {
+          state.playbackProxyFallbackGeneration = generation
+          freshToken = true
+        } else {
+          handlePlaybackFailure(state.current, generation, playbackError('音频连接中断', 'network', { mediaErrorCode }))
+          return
         }
-        void bridge.media.playbackUrl(state.currentAudioDirectUrl, {
-          size: source.size,
-          br: source.br,
-          time: source.time,
-          duration: state.current?.duration,
-        }).then((retryUrl) => {
-          if (generation !== state.audioLoadGeneration || !retryUrl) return
-          dom.audio.src = retryUrl
-          dom.audio.load()
-          reportPlaybackBuffer(true)
-          applyPendingAudioSeek()
-          if (shouldResume && state.playbackIntentPlaying) return dom.audio.play()
-          return undefined
-        }).catch((error) => {
-          if (generation !== state.audioLoadGeneration || isSupersededPlaybackError(error)) return
-          handlePlaybackFailure(state.current, generation, playbackError(error?.message || '音频连接失败', 'network'))
-        })
+        void recoverOptimizedPlayback(generation, { freshToken, target: retryTarget, shouldResume })
+          .then((recovered) => {
+            if (!recovered && generation === state.audioLoadGeneration) {
+              handlePlaybackFailure(state.current, generation, playbackError('音频连接恢复失败', 'network', { mediaErrorCode }))
+            }
+          })
         return
       }
-      const mediaErrorCode = Number(dom.audio.error.code || 0)
       const kind = mediaErrorCode === 4 ? 'unavailable' : 'network'
       const error = playbackError(`音频连接中断（错误代码 ${mediaErrorCode || '未知'}）`, kind, { mediaErrorCode })
       handlePlaybackFailure(state.current, state.audioLoadGeneration, error)

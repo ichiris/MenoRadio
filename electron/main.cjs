@@ -25,6 +25,8 @@ const {
   effectivePlaybackBytesPerSecond,
   playbackBurstBytesPerSecond,
   playbackSegmentBytes,
+  playbackRangeMinimumBytes,
+  playbackRangeIsPrimed,
   requestedByteRange,
   parseContentRange,
 } = require('./playback-stream.cjs')
@@ -104,11 +106,14 @@ function playbackSourceUrl(payload = {}) {
     size: Math.max(0, Number(payload.size) || 0),
     cruiseBytesPerSecond: effectivePlaybackBytesPerSecond(payload),
     burstBytesPerSecond: playbackBurstBytesPerSecond(payload),
+    rangeMinimumBytes: playbackRangeMinimumBytes(payload),
+    rangeBytesPumped: 0,
     availableAt: Date.now(),
     bufferAheadSeconds: 0,
     bufferKnown: false,
     bufferGateClosed: false,
     seekPrimingUntil: 0,
+    starving: false,
     paused: false,
     bufferWaiters: new Set(),
     activeReader: null,
@@ -149,7 +154,10 @@ function updatePlaybackBuffer(payload = {}) {
   const ahead = Math.max(0, Math.min(300, Number(payload.bufferedAhead) || 0))
   source.bufferAheadSeconds = ahead
   source.paused = Boolean(payload.paused)
-  if (Boolean(payload.seeking) || Date.now() < source.seekPrimingUntil) {
+  const readyState = Math.max(0, Number(payload.readyState) || 0)
+  source.starving = Boolean(payload.starving)
+    || (!source.paused && readyState <= 2)
+  if (Boolean(payload.seeking) || source.starving || Date.now() < source.seekPrimingUntil) {
     source.bufferKnown = false
     source.bufferGateClosed = false
     for (const wake of source.bufferWaiters) wake()
@@ -159,7 +167,8 @@ function updatePlaybackBuffer(payload = {}) {
   source.bufferKnown = true
   if (source.bufferGateClosed) {
     if (ahead <= PLAYBACK_BUFFER_LOW_SECONDS) source.bufferGateClosed = false
-  } else if (ahead >= (source.paused ? PLAYBACK_BUFFER_LOW_SECONDS : PLAYBACK_BUFFER_HIGH_SECONDS)) {
+  } else if (playbackRangeIsPrimed(source)
+    && ahead >= (source.paused ? PLAYBACK_BUFFER_LOW_SECONDS : PLAYBACK_BUFFER_HIGH_SECONDS)) {
     source.bufferGateClosed = true
   }
   if (!source.bufferGateClosed) {
@@ -211,8 +220,8 @@ async function reservePlaybackBandwidth(source, reader, byteLength) {
 }
 
 async function waitForPlaybackWindow(source, reader) {
-  if (Date.now() < source.seekPrimingUntil) source.bufferGateClosed = false
-  while (source.bufferGateClosed && !source.cancelled && !reader.cancelled) {
+  if (source.starving || Date.now() < source.seekPrimingUntil) source.bufferGateClosed = false
+  while (source.bufferGateClosed && !source.starving && !source.cancelled && !reader.cancelled) {
     await new Promise((resolve) => {
       let timer = null
       const wake = () => {
@@ -323,6 +332,8 @@ async function readSegmentedPlayback(source, protocolRequest) {
   source.bufferAheadSeconds = 0
   source.bufferKnown = false
   source.bufferGateClosed = false
+  source.starving = false
+  source.rangeBytesPumped = 0
   source.availableAt = Math.min(source.availableAt, Date.now())
   for (const wake of source.bufferWaiters) wake()
   source.bufferWaiters.clear()
@@ -371,6 +382,7 @@ async function readSegmentedPlayback(source, protocolRequest) {
       source.size = finalEnd + 1
     }
     reader.startupBytesRemaining = Math.max(0, reader.startupBytesRemaining - result.bytes.length)
+    if (source.activeReader === reader) source.rangeBytesPumped += result.bytes.length
     if (source.size > 0) finalEnd = Math.min(finalEnd, source.size - 1)
     cursor += result.bytes.length
     return result

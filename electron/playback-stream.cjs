@@ -11,6 +11,7 @@ const PLAYBACK_SEGMENT_BYTES = 128 * 1024
 const PLAYBACK_BUFFER_LOW_SECONDS = 10
 const PLAYBACK_BUFFER_HIGH_SECONDS = 25
 const PLAYBACK_SEEK_PRIMING_MS = 2800
+const PLAYBACK_RANGE_MINIMUM_SECONDS = 10
 
 function positiveNumber(value) {
   const number = Number(value)
@@ -53,12 +54,27 @@ function playbackSegmentBytes(remaining = Number.MAX_SAFE_INTEGER) {
   return Math.min(PLAYBACK_SEGMENT_BYTES, value)
 }
 
+function playbackRangeMinimumBytes(source = {}, track = {}) {
+  const encodedBytesPerSecond = measuredBytesPerSecond(source, track)
+    || FALLBACK_PLAYBACK_BYTES_PER_SECOND
+  return Math.max(
+    PLAYBACK_SEGMENT_BYTES * 2,
+    Math.min(8 * 1024 * 1024, Math.round(encodedBytesPerSecond * PLAYBACK_RANGE_MINIMUM_SECONDS)),
+  )
+}
+
+function playbackRangeIsPrimed(source = {}) {
+  return Math.max(0, Number(source.rangeBytesPumped) || 0)
+    >= Math.max(0, Number(source.rangeMinimumBytes) || 0)
+}
+
 function resetPlaybackBufferForSeek(source, now = Date.now()) {
   if (!source || source.cancelled) return false
   const timestamp = Number.isFinite(Number(now)) ? Number(now) : Date.now()
   source.bufferAheadSeconds = 0
   source.bufferKnown = false
   source.bufferGateClosed = false
+  source.rangeBytesPumped = 0
   source.seekPrimingUntil = timestamp + PLAYBACK_SEEK_PRIMING_MS
   source.availableAt = Math.min(
     Number.isFinite(Number(source.availableAt)) ? Number(source.availableAt) : timestamp,
@@ -110,6 +126,8 @@ module.exports = {
   effectivePlaybackBytesPerSecond,
   playbackBurstBytesPerSecond,
   playbackSegmentBytes,
+  playbackRangeMinimumBytes,
+  playbackRangeIsPrimed,
   resetPlaybackBufferForSeek,
   parseByteRange,
   requestedByteRange,

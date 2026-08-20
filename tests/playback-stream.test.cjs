@@ -10,6 +10,8 @@ const {
   effectivePlaybackBytesPerSecond,
   playbackBurstBytesPerSecond,
   playbackSegmentBytes,
+  playbackRangeMinimumBytes,
+  playbackRangeIsPrimed,
   resetPlaybackBufferForSeek,
   requestedByteRange,
   parseContentRange,
@@ -68,6 +70,7 @@ test('seeking clears stale buffered-ahead state and temporarily opens the gate',
     bufferAheadSeconds: 42,
     bufferKnown: true,
     bufferGateClosed: true,
+    rangeBytesPumped: 900000,
     availableAt: 5000,
     cancelled: false,
   }
@@ -75,8 +78,18 @@ test('seeking clears stale buffered-ahead state and temporarily opens the gate',
   assert.equal(source.bufferAheadSeconds, 0)
   assert.equal(source.bufferKnown, false)
   assert.equal(source.bufferGateClosed, false)
+  assert.equal(source.rangeBytesPumped, 0)
   assert.equal(source.availableAt, 4000)
   assert.equal(source.seekPrimingUntil, 4000 + PLAYBACK_SEEK_PRIMING_MS)
+})
+
+test('a fresh range must provide its own playable bytes before the buffer gate can close', () => {
+  const rangeMinimumBytes = playbackRangeMinimumBytes({ br: 320000 })
+  const source = { rangeMinimumBytes, rangeBytesPumped: rangeMinimumBytes - 1 }
+  assert.equal(rangeMinimumBytes, 400000)
+  assert.equal(playbackRangeIsPrimed(source), false)
+  source.rangeBytesPumped += 1
+  assert.equal(playbackRangeIsPrimed(source), true)
 })
 
 test('current NetEase quality levels pass through and legacy values migrate', () => {
