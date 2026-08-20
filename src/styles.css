@@ -528,7 +528,7 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
 .immersive-volume-popover input { flex: 1; min-width: 0; }.immersive-volume-popover span { width: 32px; color: rgba(255,255,255,.65); font-size: 11px; text-align: right; }
 .lyrics-panel { height: var(--panel-height); min-width: 0; align-self: center; overflow: hidden; position: relative; }
 .lyrics-scroller { height: 100%; overflow: hidden auto; padding: 0 3.8% var(--lyric-bottom-space, 390px) 0; scrollbar-width: none; overscroll-behavior: contain; }.lyrics-scroller::-webkit-scrollbar { display: none; }
-.immersive-player[data-lyric-scale="auto"] { --lyric-font-size: 40px; }
+.immersive-player[data-lyric-scale="auto"] { --lyric-font-size: var(--auto-lyric-font-size, 30px); }
 .immersive-player[data-lyric-scale="60"] { --lyric-font-size: 20px; }
 .immersive-player[data-lyric-scale="80"] { --lyric-font-size: 27px; }
 .immersive-player[data-lyric-scale="100"] { --lyric-font-size: 34px; }
@@ -662,8 +662,4 @@ html.drag-forbidden body { cursor: not-allowed !important; }
 @media (max-height: 720px) {
   .immersive-meta { margin-top: 13px; }.immersive-progress { margin-top: 12px; }.immersive-play-button { width: 48px; height: 48px; }
   .lyric-line { margin-bottom: calc(var(--lyric-font-size, 31px) * 1.1); }
-}
-
-@media (max-height: 1120px) {
-  .immersive-player[data-lyric-scale="auto"] { --lyric-font-size: 31px; }
 }

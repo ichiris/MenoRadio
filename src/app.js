@@ -1,6 +1,7 @@
 const bridge = window.menoradio
 const {
   clamp,
+  adaptiveLyricFontSize,
   hexToHsv,
   hsvToHex,
   hexToRgbText,
@@ -1282,7 +1283,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.14.1-preview'
+  const version = '0.14.3-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -3742,6 +3743,7 @@ function applyImmersiveLayout(immediate = false) {
   const lyricsWidth = Math.round(clamp(390, Math.min(available - compactLyricsInset, responsiveLyricsWidth), 1020))
   const panelTail = Math.round(clamp(226, height * .27 - 35, 330))
   const panelHeight = Math.min(cover + panelTail, Math.max(0, height - 110))
+  const autoLyricFontSize = adaptiveLyricFontSize(lyricsWidth, panelHeight)
   const focusRatio = clamp(.17, .17 + Math.max(0, height - 680) / 920 * .06, .23)
   const compactShift = width < 1200 ? Math.round(clamp(0, (1200 - width) * .08, 18)) : 0
   state.lyricFocusRatio = focusRatio
@@ -3755,6 +3757,7 @@ function applyImmersiveLayout(immediate = false) {
   content.style.setProperty('--lyric-bottom-space', `${Math.round(panelHeight * .64)}px`)
   content.style.setProperty('--content-shift', `${compactShift}px`)
   content.style.setProperty('--content-height', `${Math.max(0, height - 74)}px`)
+  dom.immersive.style.setProperty('--auto-lyric-font-size', `${autoLyricFontSize}px`)
   if (immediate) requestAnimationFrame(() => content.classList.remove('layout-instant'))
   window.setTimeout(() => updateActiveLyric(playbackClockTime(), true, true), immediate ? 20 : 540)
 }

@@ -15,6 +15,13 @@ test('formatters retain renderer-facing output', () => {
   assert.equal(core.formatCount(12000), '1.2 万')
 })
 
+test('adaptive lyric sizing follows the rendered panel instead of viewport height', () => {
+  assert.equal(core.adaptiveLyricFontSize(576, 610), 30)
+  assert.equal(core.adaptiveLyricFontSize(1020, 1030), 40)
+  assert.equal(core.adaptiveLyricFontSize(390, 610), core.adaptiveLyricFontSize(390, 1200))
+  assert.equal(core.adaptiveLyricFontSize(300, 300), 24)
+})
+
 test('NetEase image helpers request bounded thumbnails without changing unrelated URLs', () => {
   assert.equal(core.sizedImageUrl('http://p1.music.126.net/cover.jpg', 94), 'https://p1.music.126.net/cover.jpg?param=94y94')
   assert.equal(core.sizedImageUrl('https://example.com/cover.jpg', 94), 'https://example.com/cover.jpg')

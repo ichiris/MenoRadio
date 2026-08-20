@@ -18,6 +18,16 @@
     return Math.max(min, Math.min(max, value))
   }
 
+  function adaptiveLyricFontSize(lyricsWidth, panelHeight) {
+    const width = Math.max(0, Number(lyricsWidth) || 0)
+    const height = Math.max(0, Number(panelHeight) || 0)
+    const shortEdge = Math.min(width, height)
+    const defaultShortEdge = 576
+    const fullScreenShortEdge = 1020
+    const size = 30 + (shortEdge - defaultShortEdge) * (10 / (fullScreenShortEdge - defaultShortEdge))
+    return Math.round(clamp(size, 24, 40) * 100) / 100
+  }
+
   function hexToHsv(hex) {
     const match = String(hex || '').match(/^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i)
     const [r, g, b] = match ? match.slice(1).map((value) => parseInt(value, 16) / 255) : [1, 1, 1]
@@ -151,6 +161,7 @@
 
   window.MenoRadioCore = Object.assign(window.MenoRadioCore || {}, {
     clamp,
+    adaptiveLyricFontSize,
     hexToHsv,
     hsvToHex,
     hexToRgbText,
