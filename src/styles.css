@@ -509,7 +509,7 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
 .now-copy { min-width: 0; display: grid; gap: 4px; }.now-copy strong, .now-copy small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }.now-copy strong { font-size: 13px; }.now-copy small { color: var(--text-muted); font-size: 11px; }
 .player-icon { width: 34px; height: 34px; color: #d8d3da; }.player-icon svg { width: 18px; height: 18px; }.player-icon.active { color: var(--accent-strong); }
 .transport { display: flex; align-items: center; justify-content: center; gap: 10px; }
-.transport #playModeButton { margin-right: 5px; }
+.transport #likeButton { margin-right: 5px; }
 .play-button { width: 42px; height: 42px; border: 0; border-radius: 50%; background: #f5f2f6; color: #26232a; display: grid; place-items: center; }
 .play-button:hover { background: white; }.play-button svg { width: 21px; height: 21px; }
 .player-tools { justify-self: end; display: flex; align-items: center; gap: 3px; }.time-label { color: var(--text-muted); font-size: 11px; min-width: 72px; text-align: right; }

@@ -1,6 +1,6 @@
 {
   "name": "menoradio",
-  "version": "0.14.9-preview",
+  "version": "0.14.10-preview",
   "description": "A calm, Fluent-inspired NetEase Cloud Music desktop player.",
   "main": "electron/main.cjs",
   "author": "ichiris",
