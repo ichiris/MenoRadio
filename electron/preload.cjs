@@ -10,6 +10,9 @@ contextBridge.exposeInMainWorld('menoradio', {
     isMaximized: () => invoke('window:is-maximized'),
     setFullScreen: (value) => invoke('window:set-fullscreen', Boolean(value)),
     isFullScreen: () => invoke('window:is-fullscreen'),
+    getZoom: () => invoke('window:get-zoom'),
+    setZoom: (value, notify = true) => invoke('window:set-zoom', { value, notify }),
+    stepZoom: (direction) => invoke('window:step-zoom', direction),
     onMaximized: (callback) => {
       const listener = (_event, value) => callback(value)
       ipcRenderer.on('window:maximized', listener)
@@ -19,6 +22,11 @@ contextBridge.exposeInMainWorld('menoradio', {
       const listener = (_event, value) => callback(value)
       ipcRenderer.on('window:fullscreen', listener)
       return () => ipcRenderer.removeListener('window:fullscreen', listener)
+    },
+    onZoomChanged: (callback) => {
+      const listener = (_event, value) => callback(value)
+      ipcRenderer.on('window:zoom-changed', listener)
+      return () => ipcRenderer.removeListener('window:zoom-changed', listener)
     },
   },
   auth: {
@@ -50,6 +58,8 @@ contextBridge.exposeInMainWorld('menoradio', {
   },
   app: {
     version: () => invoke('app:version'),
+    checkUpdate: () => invoke('app:check-update'),
+    thirdPartyNotices: () => invoke('app:third-party-notices'),
     cacheSize: () => invoke('app:cache-size'),
     clearCache: () => invoke('app:clear-cache'),
     reset: () => invoke('app:reset'),

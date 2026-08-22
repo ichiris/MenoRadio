@@ -66,6 +66,191 @@ let authStatusMisses = 0
 let installedFontsCache = null
 let resettingApplication = false
 
+const mainWindowZoomFactors = [.5, .67, .75, .8, .9, 1, 1.1, 1.25, 1.5, 1.75, 2]
+
+function normalizedMainWindowZoom(value) {
+  const factor = Number(value)
+  if (!Number.isFinite(factor)) return 1
+  return Math.max(mainWindowZoomFactors[0], Math.min(mainWindowZoomFactors.at(-1), factor))
+}
+
+function setMainWindowZoom(value, notify = true) {
+  const factor = normalizedMainWindowZoom(value)
+  if (!mainWindow || mainWindow.isDestroyed()) return factor
+  mainWindow.webContents.setZoomFactor(factor)
+  if (notify && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send('window:zoom-changed', factor)
+  }
+  return factor
+}
+
+function stepMainWindowZoom(direction) {
+  if (!mainWindow || mainWindow.isDestroyed()) return 1
+  const current = mainWindow.webContents.getZoomFactor()
+  const nearestIndex = mainWindowZoomFactors.reduce((bestIndex, factor, index) => (
+    Math.abs(factor - current) < Math.abs(mainWindowZoomFactors[bestIndex] - current) ? index : bestIndex
+  ), 0)
+  const nextIndex = Math.max(0, Math.min(mainWindowZoomFactors.length - 1, nearestIndex + Math.sign(Number(direction) || 0)))
+  return setMainWindowZoom(mainWindowZoomFactors[nextIndex])
+}
+
+function handleMainWindowZoomShortcut(event, input) {
+  if (!input || (!input.control && !input.meta) || input.alt) return
+  const key = String(input.key || '').toLowerCase()
+  const code = String(input.code || '')
+  const zoomIn = key === '+' || key === '=' || code === 'NumpadAdd'
+  const zoomOut = key === '-' || code === 'NumpadSubtract'
+  const zoomReset = key === '0' || code === 'Numpad0'
+  if (!zoomIn && !zoomOut && !zoomReset) return
+  event.preventDefault()
+  if (input.type !== 'keyDown') return
+  if (zoomReset) setMainWindowZoom(1)
+  else stepMainWindowZoom(zoomIn ? 1 : -1)
+}
+
+const githubLatestReleaseApi = 'https://api.github.com/repos/ichiris/MenoRadio/releases/latest'
+const githubLatestReleasePage = 'https://github.com/ichiris/MenoRadio/releases/latest'
+const githubReleasesAtom = 'https://github.com/ichiris/MenoRadio/releases.atom'
+
+function normalizedReleaseVersion(value) {
+  return String(value || '').trim().replace(/^v/i, '')
+}
+
+function decodeXmlEntities(value) {
+  return String(value || '')
+    .replace(/&#x([0-9a-f]+);/gi, (_match, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/&#(\d+);/g, (_match, code) => String.fromCodePoint(Number(code)))
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
+function atomReleaseBody(value) {
+  const html = decodeXmlEntities(value)
+  if (!html.trim() || html.trim() === 'No content.') return ''
+  return html
+    .replace(/<pre\b[^>]*>\s*<code\b[^>]*>/gi, '\n```\n')
+    .replace(/<\/code>\s*<\/pre>/gi, '\n```\n')
+    .replace(/<h([1-6])\b[^>]*>/gi, (_match, level) => `\n${'#'.repeat(Number(level))} `)
+    .replace(/<\/h[1-6]>/gi, '\n')
+    .replace(/<li\b[^>]*>/gi, '\n- ')
+    .replace(/<\/li>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:p|div|ul|ol|blockquote)>/gi, '\n')
+    .replace(/<(?:p|div|ul|ol|blockquote)\b[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+async function fetchGithubResource(url, accept, timeoutMs = 10000) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await net.fetch(url, {
+      cache: 'no-store',
+      signal: controller.signal,
+      headers: {
+        Accept: accept,
+        'User-Agent': `MenoRadio/${app.getVersion()}`,
+      },
+    })
+    if (!response.ok) throw new Error(`GitHub returned ${response.status}`)
+    return { text: await response.text(), url: response.url || url }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function fetchGithubText(url, accept, timeoutMs = 10000) {
+  return (await fetchGithubResource(url, accept, timeoutMs)).text
+}
+
+function releaseResult(release) {
+  const currentVersion = app.getVersion()
+  return {
+    currentVersion,
+    tag: release.tag,
+    updateAvailable: normalizedReleaseVersion(release.tag) !== normalizedReleaseVersion(currentVersion),
+    name: release.name || '',
+    body: release.body || '',
+    url: release.url || 'https://github.com/ichiris/MenoRadio/releases',
+    publishedAt: release.publishedAt || '',
+  }
+}
+
+async function getLatestGithubReleaseFromApi() {
+  // Follow the release explicitly marked as Latest on GitHub. Release-list and
+  // Atom-feed order only describe publication time, so a newer test release can
+  // remain first there even after another release is selected as Latest.
+  const text = await fetchGithubText(githubLatestReleaseApi, 'application/vnd.github+json')
+  const release = JSON.parse(text)
+  const tag = String(release?.tag_name || '').trim()
+  if (!release || release.draft || !tag) throw new Error('No latest GitHub release found')
+  return releaseResult({
+    tag,
+    name: String(release.name || ''),
+    body: String(release.body || ''),
+    url: String(release.html_url || 'https://github.com/ichiris/MenoRadio/releases'),
+    publishedAt: String(release.published_at || ''),
+  })
+}
+
+function getReleaseFromAtom(xml, expectedTag) {
+  const normalizedExpectedTag = normalizedReleaseVersion(expectedTag)
+  const entries = [...String(xml || '').matchAll(/<entry>([\s\S]*?)<\/entry>/gi)].map((match) => match[1])
+  for (const entry of entries) {
+    const url = decodeXmlEntities(entry.match(/<link\b(?=[^>]*\brel="alternate")(?=[^>]*\bhref="([^"]+)")[^>]*\/?\s*>/i)?.[1] || '')
+    const tagPart = url.match(/\/releases\/tag\/([^/?#]+)/i)?.[1] || ''
+    const tag = decodeURIComponent(tagPart).trim()
+    if (!tag || normalizedReleaseVersion(tag) !== normalizedExpectedTag) continue
+    const title = decodeXmlEntities(entry.match(/<title(?:\s[^>]*)?>([\s\S]*?)<\/title>/i)?.[1] || '')
+    const content = entry.match(/<content(?:\s[^>]*)?>([\s\S]*?)<\/content>/i)?.[1] || ''
+    const publishedAt = decodeXmlEntities(entry.match(/<updated>([^<]+)<\/updated>/i)?.[1] || '')
+    return { tag, name: title, body: atomReleaseBody(content), url, publishedAt }
+  }
+  return null
+}
+
+async function getLatestGithubReleaseFromPage() {
+  // The public /releases/latest page redirects to the selected release and is
+  // not subject to the unauthenticated API quota. Use that redirect as the
+  // source of truth, then enrich it with notes from the matching Atom entry.
+  const latestPage = await fetchGithubResource(githubLatestReleasePage, 'text/html')
+  const tagPart = latestPage.url.match(/\/releases\/tag\/([^/?#]+)/i)?.[1] || ''
+  const tag = decodeURIComponent(tagPart).trim()
+  if (!tag) throw new Error('GitHub latest release did not redirect to a tag')
+
+  let atomRelease = null
+  try {
+    const xml = await fetchGithubText(githubReleasesAtom, 'application/atom+xml')
+    atomRelease = getReleaseFromAtom(xml, tag)
+  } catch {
+    // The redirect already identified the release. Missing release notes should
+    // not turn a successful update check into a failure.
+  }
+  return releaseResult(atomRelease || {
+    tag,
+    name: tag,
+    body: '',
+    url: latestPage.url,
+    publishedAt: '',
+  })
+}
+
+async function getLatestGithubRelease() {
+  try {
+    return await getLatestGithubReleaseFromApi()
+  } catch {
+    // Shared IPs can exhaust GitHub's unauthenticated API allowance. The public
+    // latest redirect still preserves GitHub's explicit Latest selection.
+    return getLatestGithubReleaseFromPage()
+  }
+}
+
 const thumbnailConcurrency = 12
 const thumbnailBytesPerSecond = 1024 * 1024
 const thumbnailMaximumBytes = 2 * 1024 * 1024
@@ -1168,6 +1353,11 @@ function createWindow() {
     },
   })
 
+  // Chromium remembers zoom per origin independently from MenoRadio's data.
+  // Always establish a neutral baseline; the renderer restores the user's
+  // explicit MenoRadio setting after it has loaded.
+  mainWindow.webContents.setZoomFactor(1)
+  mainWindow.webContents.on('before-input-event', handleMainWindowZoomShortcut)
   mainWindow.loadFile(path.join(__dirname, '..', 'src', 'index.html'))
   mainWindow.once('ready-to-show', () => mainWindow.show())
   mainWindow.on('maximize', () => mainWindow.webContents.send('window:maximized', true))
@@ -1381,7 +1571,16 @@ function registerWindowIpc() {
     return mainWindow.isFullScreen()
   })
   ipcMain.handle('window:is-fullscreen', () => mainWindow?.isFullScreen() || false)
+  ipcMain.handle('window:get-zoom', () => mainWindow?.webContents.getZoomFactor() || 1)
+  ipcMain.handle('window:set-zoom', (_event, payload) => {
+    const value = payload && typeof payload === 'object' ? payload.value : payload
+    const notify = payload && typeof payload === 'object' ? payload.notify !== false : true
+    return setMainWindowZoom(value, notify)
+  })
+  ipcMain.handle('window:step-zoom', (_event, direction) => stepMainWindowZoom(direction))
   ipcMain.handle('app:version', () => app.getVersion())
+  ipcMain.handle('app:check-update', () => getLatestGithubRelease())
+  ipcMain.handle('app:third-party-notices', () => fs.readFileSync(path.join(__dirname, '..', 'THIRD_PARTY_NOTICES.md'), 'utf8'))
   ipcMain.handle('app:cache-size', () => session.defaultSession.getCacheSize())
   ipcMain.handle('app:clear-cache', async () => {
     const clearedBytes = await session.defaultSession.getCacheSize()
@@ -1402,6 +1601,7 @@ function registerWindowIpc() {
     authStatusMisses = 0
     installedFontsCache = null
     floatingLyricsState = { config: { ...floatingLyricsDefaults }, bounds: null }
+    setMainWindowZoom(1, false)
 
     await Promise.allSettled([
       session.defaultSession.clearStorageData(),

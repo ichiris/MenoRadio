@@ -34,10 +34,148 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)]
 const icon = (name) => `<svg aria-hidden="true"><use href="#i-${name}"></use></svg>`
 const playbackSessionStorageKey = 'menoradio.playbackSession.v1'
 const searchHistoryStorageKey = 'menoradio.searchHistory.v1'
+const updateNotificationStorageKey = 'menoradio.lastNotifiedReleaseTag.v1'
+const zoomStorageKey = 'menoradio.zoomFactor.v1'
 const searchHistoryLimit = 12
 const lyricsClockIntervalMs = 180
 const lyricsClockMinimumDelayMs = 8
 const lyricActivationToleranceSeconds = .06
+let pendingAutomaticRelease = null
+let updateCheckPromise = null
+let zoomControlsHideTimer = 0
+let restoringPageZoom = false
+
+function markdownInline(value) {
+  const tokens = []
+  const token = (html) => {
+    const key = `\u0000${tokens.length}\u0000`
+    tokens.push(html)
+    return key
+  }
+  let source = String(value || '')
+  source = source.replace(/`([^`]+)`/g, (_match, code) => token(`<code>${escapeHtml(code)}</code>`))
+  source = source.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_match, label, url) => token(`<button type="button" class="markdown-link" data-external="${attr(url)}">${escapeHtml(label)}</button>`))
+  source = source.replace(/<(https?:\/\/[^>]+)>/g, (_match, url) => token(`<button type="button" class="markdown-link" data-external="${attr(url)}">${escapeHtml(url)}</button>`))
+  source = escapeHtml(source)
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/~~([^~]+)~~/g, '<del>$1</del>')
+    .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
+  return source.replace(/\u0000(\d+)\u0000/g, (_match, index) => tokens[Number(index)] || '')
+}
+
+function markdownTableCells(line) {
+  return String(line || '')
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split(/(?<!\\)\|/)
+    .map((cell) => cell.trim().replace(/\\\|/g, '|'))
+}
+
+function renderSafeMarkdown(markdown) {
+  const lines = String(markdown || '').replace(/\r\n?/g, '\n').split('\n')
+  const output = []
+  let paragraph = []
+  let listType = ''
+  let inCode = false
+  let codeLines = []
+  const flushParagraph = () => {
+    if (!paragraph.length) return
+    output.push(`<p>${markdownInline(paragraph.join(' '))}</p>`)
+    paragraph = []
+  }
+  const closeList = () => {
+    if (!listType) return
+    output.push(`</${listType}>`)
+    listType = ''
+  }
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (/^\s*```/.test(line)) {
+      flushParagraph()
+      closeList()
+      if (inCode) {
+        output.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`)
+        codeLines = []
+        inCode = false
+      } else inCode = true
+      continue
+    }
+    if (inCode) {
+      codeLines.push(line)
+      continue
+    }
+    if (!line.trim()) {
+      flushParagraph()
+      closeList()
+      continue
+    }
+    const tableDivider = lines[index + 1]
+    if (line.includes('|') && /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(tableDivider || '')) {
+      flushParagraph()
+      closeList()
+      const headings = markdownTableCells(line)
+      const alignments = markdownTableCells(tableDivider).map((cell) => {
+        const left = cell.startsWith(':')
+        const right = cell.endsWith(':')
+        return left && right ? 'center' : right ? 'right' : 'left'
+      })
+      const rows = []
+      index += 2
+      while (index < lines.length && lines[index].trim() && lines[index].includes('|')) {
+        rows.push(markdownTableCells(lines[index]))
+        index += 1
+      }
+      index -= 1
+      const cellStyle = (column) => ` style="text-align:${alignments[column] || 'left'}"`
+      output.push(`<div class="markdown-table-wrap"><table><thead><tr>${headings.map((cell, column) => `<th${cellStyle(column)}>${markdownInline(cell)}</th>`).join('')}</tr></thead><tbody>${rows.map((row) => `<tr>${headings.map((_heading, column) => `<td${cellStyle(column)}>${markdownInline(row[column] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`)
+      continue
+    }
+    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+)$/)
+    if (heading) {
+      flushParagraph()
+      closeList()
+      // Release-note headings stay subordinate to the dialog title.
+      const level = Math.min(6, Math.max(4, heading[1].length + 3))
+      output.push(`<h${level}>${markdownInline(heading[2])}</h${level}>`)
+      continue
+    }
+    if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
+      flushParagraph()
+      closeList()
+      output.push('<hr>')
+      continue
+    }
+    const quote = line.match(/^\s*>\s?(.*)$/)
+    if (quote) {
+      flushParagraph()
+      closeList()
+      output.push(`<blockquote>${markdownInline(quote[1])}</blockquote>`)
+      continue
+    }
+    const list = line.match(/^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/)
+    if (list) {
+      flushParagraph()
+      const nextType = list[2] ? 'ol' : 'ul'
+      if (listType !== nextType) {
+        closeList()
+        listType = nextType
+        output.push(`<${listType}>`)
+      }
+      const task = list[3].match(/^\[([ xX])\]\s*(.*)$/)
+      output.push(task
+        ? `<li class="markdown-task"><input type="checkbox" disabled ${task[1].toLowerCase() === 'x' ? 'checked' : ''}>${markdownInline(task[2])}</li>`
+        : `<li>${markdownInline(list[3])}</li>`)
+      continue
+    }
+    closeList()
+    paragraph.push(line.trim())
+  }
+  if (inCode) output.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`)
+  flushParagraph()
+  closeList()
+  return output.join('')
+}
 
 const dom = {
   page: $('#page'),
@@ -54,6 +192,8 @@ const dom = {
   timeLabel: $('#timeLabel'),
   modalLayer: $('#modalLayer'),
   toastLayer: $('#toastLayer'),
+  zoomControls: $('#zoomControls'),
+  zoomValue: $('#zoomValue'),
   queueDrawer: $('#queueDrawer'),
   queueList: $('#queueList'),
   immersiveQueuePanel: $('#immersiveQueuePanel'),
@@ -176,6 +316,8 @@ const state = {
   radioLoading: false,
   immersiveChromeTimer: 0,
   immersiveLayoutTimer: 0,
+  immersiveLayoutSettleTimer: 0,
+  immersiveLayoutGeneration: 0,
   immersiveAppSuspendTimer: 0,
   immersiveViewTimer: 0,
   immersiveViewPhaseTimer: 0,
@@ -1283,7 +1425,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.14.3-preview'
+  const version = '0.14.9-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1299,12 +1441,38 @@ function renderSettings() {
       <section class="settings-card"><div><h3>媒体加载优化</h3></div><label class="setting-switch"><input type="checkbox" data-media-loading-optimization ${state.mediaLoadingOptimization ? 'checked' : ''}><i></i></label></section>
       <button type="button" class="settings-card settings-navigation-card" data-route-link="settings-floating"><h3>悬浮歌词</h3><svg><use href="#i-chevron"/></svg></button>
       <section class="settings-card data-management-card"><div><h3>数据管理</h3></div><div class="setting-actions"><button class="secondary-button" data-clear-cache>清理缓存</button><button type="button" class="secondary-button application-reset-button" data-reset-application>重置</button></div></section>
-      <section class="settings-card"><div><h3>关于</h3><p>MenoRadio <span data-app-version>${escapeHtml(version)}</span> · 开发者 <button type="button" class="settings-link" data-external="https://github.com/ichiris">@ichiris</button></p></div><div class="setting-actions"><button class="secondary-button" data-external="https://github.com/ichiris/MenoRadio">项目主页 ${icon('external')}</button><button class="secondary-button" data-external="https://github.com/neteasecloudmusicapienhanced/api-enhanced">引用开源项目 ${icon('external')}</button></div></section>
+      <section class="settings-card"><div><h3>关于</h3><p>MenoRadio <span data-app-version>${escapeHtml(version)}</span> · 开发者 <button type="button" class="settings-link" data-external="https://github.com/ichiris">@ichiris</button></p></div><div class="setting-actions"><button class="secondary-button" data-external="https://github.com/ichiris/MenoRadio">项目主页 ${icon('external')}</button><button class="secondary-button" data-route-link="settings-licenses">开源许可</button><button class="secondary-button" data-check-update>检查更新</button></div></section>
     </div>
   </div>`
   bridge.app.version().then((value) => {
     if (state.route === 'settings') $('[data-app-version]', dom.page)?.replaceChildren(document.createTextNode(value))
   }).catch(() => {})
+}
+
+async function renderOpenSourceLicenses() {
+  dom.page.innerHTML = `<div class="page-inner licenses-page">${pageTitle('开源许可')}
+    <section class="license-document license-loading"><span class="lyric-loading-spinner" aria-hidden="true"></span><p>正在读取开源许可</p></section>
+  </div>`
+  try {
+    const source = await bridge.app.thirdPartyNotices()
+    if (state.route !== 'settings-licenses') return
+    const licenses = String(source || '')
+      .replace(/^#\s+Third-party notices\s*/i, '')
+      .replace(/\n##\s+Service and product names[\s\S]*$/i, '')
+      .trim()
+    const document = $('.license-document', dom.page)
+    if (document) {
+      document.className = 'license-document markdown-document'
+      document.innerHTML = renderSafeMarkdown(licenses)
+    }
+  } catch {
+    if (state.route !== 'settings-licenses') return
+    const document = $('.license-document', dom.page)
+    if (document) {
+      document.className = 'license-document license-error'
+      document.innerHTML = '<h2>无法读取开源许可</h2><p>请稍后重试。</p>'
+    }
+  }
 }
 
 function renderFloatingLyricsSettings() {
@@ -1344,7 +1512,7 @@ function renderFloatingLyricsSettings() {
           </div></div>
           <div class="floating-setting-row"><label for="floatingOpacity">不透明度</label><div class="setting-range"><input id="floatingOpacity" type="range" min=".15" max="1" step=".01" value="${attr(floating.opacity)}" data-floating-setting="opacity"><output>${Math.round(floating.opacity * 100)}%</output></div></div>
           <div class="floating-setting-row"><span>无翻译时</span>${choicePickerMarkup('floating-no-translation-position', floating.noTranslationPosition, floatingLyricVerticalPositions, '无翻译时的位置')}</div>
-          <div class="floating-setting-footer"><p>解除锁定后可拖动和缩放；右键打开菜单可再次锁定。</p><button type="button" class="secondary-button floating-reset-button" data-reset-floating-lyrics title="长按 3 秒重置" aria-label="长按 3 秒重置悬浮歌词"><span>重置悬浮歌词</span></button></div>
+          <div class="floating-setting-footer"><p>解除锁定后可拖动和缩放；若不慎将悬浮歌词拖动到了莫名其妙的位置，可使用重置来恢复。</p><button type="button" class="secondary-button floating-reset-button" data-reset-floating-lyrics title="长按 3 秒重置" aria-label="长按 3 秒重置悬浮歌词"><span>重置悬浮歌词</span></button></div>
         </div>
       </section>
     </div>
@@ -1425,6 +1593,7 @@ async function renderRoute() {
       return
     case 'settings': return renderSettings()
     case 'settings-floating': return renderFloatingLyricsSettings()
+    case 'settings-licenses': return renderOpenSourceLicenses()
     default: return renderHome()
   }
 }
@@ -1479,7 +1648,8 @@ function updateHistoryButtons() {
 }
 
 function setActiveNav(route) {
-  $$('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.route === route))
+  const activeRoute = String(route || '').startsWith('settings') ? 'settings' : route
+  $$('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.route === activeRoute))
 }
 
 function updateRange(element, value, max = 1) {
@@ -2968,6 +3138,11 @@ function smootherStep(value) {
   return clamped * clamped * clamped * (clamped * (clamped * 6 - 15) + 10)
 }
 
+function softenedLyricMotionProgress(progress) {
+  // Ease only the first instant, then continuously rejoin the original timeline.
+  return progress - .12 * progress * Math.pow(1 - progress, 3)
+}
+
 function lyricSpringFrames(visualDelta, queueDepth) {
   const depth = Math.min(6, queueDepth)
   const damping = .72 - depth * .014
@@ -2977,8 +3152,9 @@ function lyricSpringFrames(visualDelta, queueDepth) {
   const samples = 60
   return Array.from({ length: samples + 1 }, (_, index) => {
     const progress = index / samples
-    const spring = Math.exp(-damping * frequency * progress) * (
-      Math.cos(dampedFrequency * progress) + phase * Math.sin(dampedFrequency * progress)
+    const motionProgress = softenedLyricMotionProgress(progress)
+    const spring = Math.exp(-damping * frequency * motionProgress) * (
+      Math.cos(dampedFrequency * motionProgress) + phase * Math.sin(dampedFrequency * motionProgress)
     )
     const settle = 1 - smootherStep((progress - .84) / .16)
     const displacement = visualDelta * spring * settle
@@ -3727,6 +3903,29 @@ async function togglePlaylistSubscription(button) {
   return changePlaylistSubscription(playlist, button.dataset.playlistSubscribed !== 'true')
 }
 
+function scheduleImmersiveLyricLayoutSettle(delay = 0) {
+  clearTimeout(state.immersiveLayoutSettleTimer)
+  const generation = ++state.immersiveLayoutGeneration
+  const settle = () => {
+    if (generation !== state.immersiveLayoutGeneration) return
+    const lyricScrollRunning = $$('.lyric-line', dom.lyricsScroller).some((line) => line.getAnimations().some((animation) => (
+      animation.id?.startsWith('lyric-scroll-')
+      && (animation.playState === 'running' || animation.playState === 'pending')
+    )))
+    // A delayed layout correction must not cut across a natural lyric move.
+    // Let the existing convoy animation finish, then perform the pixel-perfect
+    // alignment. This keeps resize/full-screen work independent from lyric
+    // emphasis and explicit-break timing.
+    if (lyricScrollRunning) {
+      state.immersiveLayoutSettleTimer = window.setTimeout(settle, 80)
+      return
+    }
+    state.immersiveLayoutSettleTimer = 0
+    updateActiveLyric(playbackClockTime(), true, true)
+  }
+  state.immersiveLayoutSettleTimer = window.setTimeout(settle, Math.max(0, delay))
+}
+
 function applyImmersiveLayout(immediate = false) {
   const content = $('.immersive-content', dom.immersive)
   if (!content) return
@@ -3759,7 +3958,7 @@ function applyImmersiveLayout(immediate = false) {
   content.style.setProperty('--content-height', `${Math.max(0, height - 74)}px`)
   dom.immersive.style.setProperty('--auto-lyric-font-size', `${autoLyricFontSize}px`)
   if (immediate) requestAnimationFrame(() => content.classList.remove('layout-instant'))
-  window.setTimeout(() => updateActiveLyric(playbackClockTime(), true, true), immediate ? 20 : 540)
+  scheduleImmersiveLyricLayoutSettle(immediate ? 80 : 540)
 }
 
 function showImmersiveChrome() {
@@ -3824,12 +4023,14 @@ function openImmersive(open = true) {
     if (state.coverReadyGeneration !== generation) updateNowPlaying()
     if (!state.lyricsLoading && state.lyricsReadyGeneration !== generation) void fetchLyrics(state.current, generation)
     showImmersiveChrome()
-    setTimeout(() => updateActiveLyric(playbackClockTime(), true, true), 80)
     state.immersiveAppSuspendTimer = window.setTimeout(() => {
       if (dom.immersive.classList.contains('open')) document.body.classList.add('immersive-app-suspended')
     }, 660)
   }
   else {
+    clearTimeout(state.immersiveLayoutSettleTimer)
+    state.immersiveLayoutSettleTimer = 0
+    state.immersiveLayoutGeneration += 1
     if (state.fullScreen) setImmersiveFullScreen(false)
     setImmersiveView('lyrics')
     clearTimeout(state.immersiveChromeTimer)
@@ -3947,6 +4148,72 @@ function closeModal() {
   dom.modalLayer.classList.remove('open')
   dom.modalLayer.setAttribute('aria-hidden', 'true')
   setTimeout(() => { if (!dom.modalLayer.classList.contains('open')) dom.modalLayer.innerHTML = '' }, 220)
+  if (pendingAutomaticRelease) window.setTimeout(flushPendingAutomaticUpdate, 240)
+}
+
+function showUpdateModal(release, { automatic = false } = {}) {
+  if (!release?.tag || !release?.updateAvailable) return
+  if (dom.modalLayer.classList.contains('open')) {
+    if (automatic) pendingAutomaticRelease = release
+    return
+  }
+  pendingAutomaticRelease = null
+  try { localStorage.setItem(updateNotificationStorageKey, release.tag) } catch {}
+  const releaseBody = String(release.body || '').trim()
+  dom.modalLayer.innerHTML = `<div class="modal update-modal" role="dialog" aria-modal="true" aria-labelledby="updateModalTitle">
+    <div class="modal-header"><div><h2 id="updateModalTitle">发现新版本</h2><p class="update-version">MenoRadio ${escapeHtml(release.tag)}</p></div><button type="button" class="icon-button" data-close-modal aria-label="关闭">${icon('close')}</button></div>
+    ${releaseBody ? `<article class="release-markdown markdown-document">${renderSafeMarkdown(releaseBody)}</article>` : ''}
+    <p class="update-once-note">此更新提醒仅显示一次，不会再次弹窗。</p>
+    <div class="modal-actions"><button type="button" class="primary-button" data-update-release>前往github获取新版本</button><button type="button" class="secondary-button" data-close-modal>关闭</button></div>
+  </div>`
+  dom.modalLayer.classList.add('open')
+  dom.modalLayer.setAttribute('aria-hidden', 'false')
+  $$('[data-close-modal]', dom.modalLayer).forEach((button) => button.addEventListener('click', closeModal))
+  $('[data-update-release]', dom.modalLayer)?.addEventListener('click', () => {
+    bridge.app.openExternal(release.url || 'https://github.com/ichiris/MenoRadio/releases')
+    closeModal()
+  })
+  $$('[data-external]', dom.modalLayer).forEach((button) => button.addEventListener('click', () => bridge.app.openExternal(button.dataset.external)))
+}
+
+function flushPendingAutomaticUpdate() {
+  const release = pendingAutomaticRelease
+  if (!release) return
+  if (dom.modalLayer.classList.contains('open')) return
+  pendingAutomaticRelease = null
+  let notifiedTag = ''
+  try { notifiedTag = localStorage.getItem(updateNotificationStorageKey) || '' } catch {}
+  if (notifiedTag === release.tag) return
+  showUpdateModal(release, { automatic: true })
+}
+
+async function checkForUpdates({ automatic = false, button = null } = {}) {
+  const original = button?.innerHTML || ''
+  if (button) {
+    button.disabled = true
+    button.textContent = '检查中…'
+  }
+  try {
+    if (!updateCheckPromise) {
+      updateCheckPromise = bridge.app.checkUpdate().finally(() => { updateCheckPromise = null })
+    }
+    const release = await updateCheckPromise
+    if (!release?.updateAvailable) {
+      if (!automatic) toast('已是最新版本')
+      return
+    }
+    let notifiedTag = ''
+    try { notifiedTag = localStorage.getItem(updateNotificationStorageKey) || '' } catch {}
+    if (automatic && notifiedTag === release.tag) return
+    showUpdateModal(release, { automatic })
+  } catch {
+    if (!automatic) toast('检查更新失败')
+  } finally {
+    if (button?.isConnected) {
+      button.disabled = false
+      button.innerHTML = original
+    }
+  }
 }
 
 function showCreatePlaylist() {
@@ -4208,6 +4475,67 @@ function updateMaximizeButton(button, maximized, fullScreen = false) {
   button.title = label
 }
 
+function normalizedPageZoom(value) {
+  const factor = Number(value)
+  if (!Number.isFinite(factor)) return 1
+  return Math.max(.5, Math.min(2, factor))
+}
+
+function hideZoomControls(delay = 0) {
+  clearTimeout(zoomControlsHideTimer)
+  zoomControlsHideTimer = window.setTimeout(() => {
+    if (dom.zoomControls.matches(':hover, :focus-within')) return
+    dom.zoomControls.classList.remove('open')
+    dom.zoomControls.setAttribute('aria-hidden', 'true')
+  }, Math.max(0, delay))
+}
+
+function showZoomControls() {
+  clearTimeout(zoomControlsHideTimer)
+  dom.zoomControls.classList.add('open')
+  dom.zoomControls.setAttribute('aria-hidden', 'false')
+  hideZoomControls(3200)
+}
+
+function updateZoomControls(value, { show = true, persist = true } = {}) {
+  const factor = normalizedPageZoom(value)
+  const inverse = 1 / factor
+  dom.zoomValue.textContent = `${Math.round(factor * 100)}%`
+  dom.zoomControls.style.setProperty('--zoom-overlay-inverse', String(inverse))
+  dom.zoomControls.style.setProperty('--zoom-overlay-right', `${12 * inverse}px`)
+  dom.zoomControls.style.setProperty('--zoom-overlay-top', `${48 * inverse}px`)
+  if (persist) localStorage.setItem(zoomStorageKey, String(factor))
+  if (show) showZoomControls()
+  return factor
+}
+
+async function restorePageZoom() {
+  const saved = normalizedPageZoom(localStorage.getItem(zoomStorageKey) || 1)
+  restoringPageZoom = true
+  try {
+    const applied = await bridge.window.setZoom(saved, false)
+    updateZoomControls(applied, { show: false })
+  } catch {
+    updateZoomControls(1, { show: false })
+  } finally {
+    restoringPageZoom = false
+  }
+}
+
+async function stepPageZoom(direction) {
+  try {
+    const factor = await bridge.window.stepZoom(direction)
+    updateZoomControls(factor)
+  } catch {}
+}
+
+async function resetPageZoom() {
+  try {
+    const factor = await bridge.window.setZoom(1)
+    updateZoomControls(factor)
+  } catch {}
+}
+
 function bindEvents() {
   window.addEventListener('beforeunload', persistPlaybackSession)
   window.addEventListener('pagehide', persistPlaybackSession)
@@ -4235,6 +4563,14 @@ function bindEvents() {
     fullScreenButton.title = state.fullScreen ? '退出全屏' : '全屏'
     updateMaximizeButton(button, state.maximized, state.fullScreen)
   })
+  bridge.window.onZoomChanged((factor) => {
+    updateZoomControls(factor, { show: !restoringPageZoom })
+  })
+  $('#zoomOut').addEventListener('click', () => stepPageZoom(-1))
+  $('#zoomIn').addEventListener('click', () => stepPageZoom(1))
+  $('#zoomReset').addEventListener('click', resetPageZoom)
+  dom.zoomControls.addEventListener('pointerenter', () => clearTimeout(zoomControlsHideTimer))
+  dom.zoomControls.addEventListener('pointerleave', () => hideZoomControls(900))
 
   $('#profileButton').addEventListener('click', () => {
     if (!state.loggedIn) return showLogin()
@@ -4896,7 +5232,7 @@ function bindEvents() {
       }
     }
     if (state.draggedTrack || dom.immersive.classList.contains('open')) return
-    if (state.route === 'settings' || state.route === 'settings-floating') {
+    if (String(state.route || '').startsWith('settings')) {
       if (state.queueAutoOpenedByPointer && dom.queueDrawer.classList.contains('open')) {
         toggleQueue(false, { source: 'pointer', focusCurrent: false })
       }
@@ -5149,6 +5485,8 @@ function onPageClick(event) {
   if (createPlaylist) return showCreatePlaylist()
   const clearCache = event.target.closest('[data-clear-cache]')
   if (clearCache) return clearApplicationCache(clearCache)
+  const checkUpdate = event.target.closest('[data-check-update]')
+  if (checkUpdate) return checkForUpdates({ button: checkUpdate })
   const external = event.target.closest('[data-external]')
   if (external) return bridge.app.openExternal(external.dataset.external)
   const resetFloatingLyrics = event.target.closest('[data-reset-floating-lyrics]')
@@ -5345,6 +5683,7 @@ async function init() {
   installImageRetry()
   installThumbnailLoading()
   bindEvents()
+  await restorePageZoom()
   applyDisplaySettings()
   try {
     const snapshot = await bridge.floatingLyrics.state()
@@ -5400,7 +5739,12 @@ async function init() {
     const remaining = Math.max(0, 520 - (performance.now() - initializationStarted))
     window.setTimeout(() => {
       dom.initializingScreen?.classList.add('hiding')
-      window.setTimeout(() => dom.initializingScreen?.remove(), 320)
+      window.setTimeout(() => {
+        dom.initializingScreen?.remove()
+        // Update discovery is deliberately outside initialization. A slow or
+        // unavailable GitHub connection must not delay the app becoming usable.
+        window.setTimeout(() => { void checkForUpdates({ automatic: true }) }, 900)
+      }, 320)
     }, remaining)
   }
 }

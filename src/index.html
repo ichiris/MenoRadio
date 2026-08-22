@@ -116,11 +116,11 @@
         <span class="now-copy"><strong id="nowTitle">还没有播放音乐</strong><small id="nowArtist">从一首喜欢的歌开始</small></span>
       </button>
       <div class="transport">
-        <button id="likeButton" class="player-icon" aria-label="喜欢"><svg><use href="#i-heart"/></svg></button>
+        <button id="playModeButton" class="player-icon active" aria-label="列表循环" title="列表循环"><svg><use href="#i-repeat"/></svg></button>
         <button id="previousButton" class="player-icon" aria-label="上一首"><svg><use href="#i-prev"/></svg></button>
         <button id="playButton" class="play-button" aria-label="播放"><svg><use href="#i-play"/></svg></button>
         <button id="nextButton" class="player-icon" aria-label="下一首"><svg><use href="#i-next"/></svg></button>
-        <button id="playModeButton" class="player-icon active" aria-label="列表循环" title="列表循环"><svg><use href="#i-repeat"/></svg></button>
+        <button id="likeButton" class="player-icon" aria-label="喜欢"><svg><use href="#i-heart"/></svg></button>
       </div>
       <div class="player-tools">
         <span id="timeLabel" class="time-label">0:00 / 0:00</span>
@@ -203,6 +203,12 @@
   <div id="trackMenu" class="track-menu" aria-hidden="true"></div>
   <div id="modalLayer" class="modal-layer" aria-hidden="true"></div>
   <div id="toastLayer" class="toast-layer" aria-live="polite"></div>
+  <div id="zoomControls" class="zoom-controls" role="group" aria-label="页面缩放" aria-hidden="true">
+    <strong id="zoomValue">100%</strong>
+    <button id="zoomOut" type="button" aria-label="缩小页面" title="缩小">−</button>
+    <button id="zoomIn" type="button" aria-label="放大页面" title="放大">＋</button>
+    <button id="zoomReset" class="zoom-reset" type="button">重置</button>
+  </div>
   <audio id="audio" preload="metadata"></audio>
   <script src="core/utils.js"></script>
   <script src="core/playback-queue.js"></script>
