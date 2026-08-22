@@ -315,6 +315,8 @@ const state = {
   radioMode: false,
   radioLoading: false,
   immersiveChromeTimer: 0,
+  immersiveVolumeCloseTimer: 0,
+  immersiveVolumeTemporary: false,
   immersiveLayoutTimer: 0,
   immersiveLayoutSettleTimer: 0,
   immersiveLayoutGeneration: 0,
@@ -1425,7 +1427,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.14.10-preview'
+  const version = '0.14.12-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1717,6 +1719,42 @@ function setVolume(value) {
   if (state.userVolume > .001) dom.audio.muted = false
   localStorage.setItem('menoradio.volume', String(state.userVolume))
   updateVolumeUi()
+}
+
+function adjustVolumeFromWheel(event) {
+  const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX
+  if (!delta) return
+  event.preventDefault()
+  event.stopPropagation()
+  const step = event.shiftKey ? .01 : .05
+  const direction = delta < 0 ? 1 : -1
+  const nextVolume = Math.round((state.userVolume + direction * step) * 100) / 100
+  setVolume(nextVolume)
+}
+
+function setImmersiveVolumePopover(open, { temporary = false } = {}) {
+  clearTimeout(state.immersiveVolumeCloseTimer)
+  state.immersiveVolumeCloseTimer = 0
+  state.immersiveVolumeTemporary = Boolean(open && temporary)
+  const popover = $('#immersiveVolumePopover')
+  popover.classList.toggle('open', open)
+  popover.setAttribute('aria-hidden', String(!open))
+  $('#immersiveVolume').setAttribute('aria-expanded', String(open))
+  if (state.immersiveVolumeTemporary) {
+    state.immersiveVolumeCloseTimer = window.setTimeout(() => {
+      setImmersiveVolumePopover(false)
+    }, 2000)
+  }
+}
+
+function adjustImmersiveVolumeFromWheel(event) {
+  if (event.currentTarget.id === 'immersiveVolume') {
+    setImmersiveVolumePopover(true, { temporary: true })
+    showImmersiveChrome()
+  } else if (state.immersiveVolumeTemporary) {
+    setImmersiveVolumePopover(true, { temporary: true })
+  }
+  adjustVolumeFromWheel(event)
 }
 
 async function audioOutputFingerprint() {
@@ -4037,9 +4075,7 @@ function openImmersive(open = true) {
     dom.immersive.classList.remove('chrome-hidden')
     $('#fontSizeMenu').classList.remove('open')
     $('#fontSizeMenu').setAttribute('aria-hidden', 'true')
-    $('#immersiveVolumePopover').classList.remove('open')
-    $('#immersiveVolumePopover').setAttribute('aria-hidden', 'true')
-    $('#immersiveVolume').setAttribute('aria-expanded', 'false')
+    setImmersiveVolumePopover(false)
   }
 }
 
@@ -4632,13 +4668,23 @@ function bindEvents() {
   $('#volumeRange').addEventListener('input', (event) => setVolume(event.currentTarget.value))
   $('#immersiveVolumeRange').addEventListener('input', (event) => setVolume(event.currentTarget.value))
   $('#immersiveMuteToggle').addEventListener('click', toggleMute)
+  for (const control of [$('#volumeButton'), $('#volumeRange')]) {
+    control?.addEventListener('wheel', adjustVolumeFromWheel, { passive: false })
+  }
+  for (const control of [
+    $('#immersiveVolume'),
+    $('#immersiveMuteToggle'),
+    $('#immersiveVolumeRange'),
+    $('#immersiveVolumeValue'),
+  ]) {
+    control?.addEventListener('wheel', adjustImmersiveVolumeFromWheel, { passive: false })
+  }
   $('#immersiveVolume').addEventListener('click', (event) => {
     event.stopPropagation()
     const popover = $('#immersiveVolumePopover')
     const open = !popover.classList.contains('open')
-    popover.classList.toggle('open', open)
-    popover.setAttribute('aria-hidden', String(!open))
-    $('#immersiveVolume').setAttribute('aria-expanded', String(open))
+    if (!open && state.immersiveVolumeTemporary) setImmersiveVolumePopover(true)
+    else setImmersiveVolumePopover(open)
   })
   $('#immersiveVolumePopover').addEventListener('click', (event) => event.stopPropagation())
   for (const range of [dom.playerProgress, dom.immersiveProgress]) {
@@ -5195,9 +5241,7 @@ function bindEvents() {
       $('#fontSizeMenu').setAttribute('aria-hidden', 'true')
     }
     if (!event.target.closest('.immersive-volume-control')) {
-      $('#immersiveVolumePopover').classList.remove('open')
-      $('#immersiveVolumePopover').setAttribute('aria-hidden', 'true')
-      $('#immersiveVolume').setAttribute('aria-expanded', 'false')
+      setImmersiveVolumePopover(false)
     }
     if (!event.target.closest('.font-picker-control')) {
       const popover = $('[data-font-popover]', dom.page)
