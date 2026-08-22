@@ -4668,17 +4668,9 @@ function bindEvents() {
   $('#volumeRange').addEventListener('input', (event) => setVolume(event.currentTarget.value))
   $('#immersiveVolumeRange').addEventListener('input', (event) => setVolume(event.currentTarget.value))
   $('#immersiveMuteToggle').addEventListener('click', toggleMute)
-  for (const control of [$('#volumeButton'), $('#volumeRange')]) {
-    control?.addEventListener('wheel', adjustVolumeFromWheel, { passive: false })
-  }
-  for (const control of [
-    $('#immersiveVolume'),
-    $('#immersiveMuteToggle'),
-    $('#immersiveVolumeRange'),
-    $('#immersiveVolumeValue'),
-  ]) {
-    control?.addEventListener('wheel', adjustImmersiveVolumeFromWheel, { passive: false })
-  }
+  $('#volumeWheelZone').addEventListener('wheel', adjustVolumeFromWheel, { passive: false })
+  $('#immersiveVolume').addEventListener('wheel', adjustImmersiveVolumeFromWheel, { passive: false })
+  $('#immersiveVolumePopover').addEventListener('wheel', adjustImmersiveVolumeFromWheel, { passive: false })
   $('#immersiveVolume').addEventListener('click', (event) => {
     event.stopPropagation()
     const popover = $('#immersiveVolumePopover')

@@ -124,8 +124,10 @@
       </div>
       <div class="player-tools">
         <span id="timeLabel" class="time-label">0:00 / 0:00</span>
-        <button id="volumeButton" class="player-icon" aria-label="音量"><svg><use href="#i-volume"/></svg></button>
-        <input id="volumeRange" class="volume-range" type="range" min="0" max="1" step="0.01" value="0.75" aria-label="音量">
+        <div id="volumeWheelZone" class="volume-wheel-zone" aria-label="音量调节">
+          <button id="volumeButton" class="player-icon" aria-label="音量"><svg><use href="#i-volume"/></svg></button>
+          <input id="volumeRange" class="volume-range" type="range" min="0" max="1" step="0.01" value="0.75" aria-label="音量">
+        </div>
         <button id="queueButton" class="player-icon" aria-label="播放队列"><svg><use href="#i-queue"/></svg></button>
       </div>
     </footer>

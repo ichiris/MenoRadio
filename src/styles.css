@@ -513,7 +513,8 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
 .play-button { width: 42px; height: 42px; border: 0; border-radius: 50%; background: #f5f2f6; color: #26232a; display: grid; place-items: center; }
 .play-button:hover { background: white; }.play-button svg { width: 21px; height: 21px; }
 .player-tools { justify-self: end; display: flex; align-items: center; gap: 3px; }.time-label { color: var(--text-muted); font-size: 11px; min-width: 72px; text-align: right; }
-.volume-range { width: 72px; height: 34px; background: transparent; }
+.volume-wheel-zone { height: 40px; display: flex; align-items: center; gap: 0; padding: 0 3px; margin: 0 -3px; }
+.volume-range { width: 86px; height: 40px; background: transparent; }
 .volume-range::-webkit-slider-runnable-track,
 #immersiveVolumeRange::-webkit-slider-runnable-track { height: 3px; border-radius: 5px; background: linear-gradient(90deg, var(--accent) var(--value), rgba(255,255,255,.18) var(--value)); }
 .volume-range::-webkit-slider-thumb,
@@ -573,7 +574,7 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
 .immersive-volume-popover { position: absolute; right: 0; bottom: 47px; width: 220px; height: 54px; padding: 7px 10px 7px 5px; display: flex; align-items: center; gap: 8px; border: 1px solid rgba(255,255,255,.15); border-radius: 9px; background: rgba(27,30,34,.92); box-shadow: 0 16px 42px rgba(0,0,0,.28); backdrop-filter: blur(22px); opacity: 0; visibility: hidden; transform: translateY(7px); transition: opacity .18s ease, transform .18s ease, visibility 0s .18s; }
 .immersive-volume-popover.open { opacity: 1; visibility: visible; transform: none; transition-delay: 0s; }
 .immersive-volume-popover input { flex: 1; min-width: 0; }.immersive-volume-popover span { width: 32px; color: rgba(255,255,255,.65); font-size: 11px; text-align: right; cursor: ns-resize; }
-#immersiveVolumeRange { height: 40px; background: transparent; }
+#immersiveVolumeRange { height: 44px; background: transparent; }
 .lyrics-panel { height: var(--panel-height); min-width: 0; align-self: center; overflow: hidden; position: relative; }
 .lyrics-scroller { height: 100%; overflow: hidden auto; padding: 0 3.8% var(--lyric-bottom-space, 390px) 0; scrollbar-width: none; overscroll-behavior: contain; }.lyrics-scroller::-webkit-scrollbar { display: none; }
 .immersive-player[data-lyric-scale="auto"] { --lyric-font-size: var(--auto-lyric-font-size, 30px); }
