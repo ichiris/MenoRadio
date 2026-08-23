@@ -42,6 +42,8 @@ contextBridge.exposeInMainWorld('menoradio', {
     userPlaylists: (uid) => invoke('data:user-playlists', uid),
     userDetail: (uid) => invoke('data:user-detail', uid),
     playlist: (id) => invoke('data:playlist', id),
+    artist: (id) => invoke('data:artist', id),
+    album: (id) => invoke('data:album', id),
     search: (keywords, type = 1, offset = 0) => invoke('data:search', { keywords, type, offset }),
     lyrics: (id) => invoke('data:lyrics', id),
     songUrl: (id, level = 'best') => invoke('data:song-url', { id, level }),

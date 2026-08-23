@@ -774,7 +774,7 @@ function maybePreloadUpcomingCovers() {
 }
 
 function imageOf(source, label = 'M') {
-  const url = source?.picUrl || source?.avatarUrl || source?.coverImgUrl || source?.album?.picUrl || source?.al?.picUrl || source?.song?.album?.picUrl
+  const url = source?.picUrl || source?.avatarUrl || source?.coverImgUrl || source?.cover || source?.album?.picUrl || source?.al?.picUrl || source?.song?.album?.picUrl
   return url ? String(url).replace(/^http:/, 'https:') : placeholderCover(label, source?.id || label)
 }
 
@@ -785,6 +785,26 @@ function artistOf(song) {
 
 function albumOf(song) {
   return song?.al?.name || song?.album?.name || song?.song?.album?.name || '未知专辑'
+}
+
+function sourceSongOf(track) {
+  const raw = track?.raw || track || {}
+  return raw?.song || raw
+}
+
+function artistsOfTrack(track) {
+  const source = sourceSongOf(track)
+  const artists = source?.ar || source?.artists || source?.song?.artists || []
+  return artists
+    .filter((artist) => artist?.id != null && artist?.name)
+    .map((artist) => ({ id: String(artist.id), name: String(artist.name), cover: imageOf(artist, artist.name) }))
+}
+
+function albumOfTrack(track) {
+  const source = sourceSongOf(track)
+  const album = source?.al || source?.album || source?.song?.album
+  if (!album?.id) return null
+  return { id: String(album.id), name: String(album.name || track?.album || '未知专辑'), cover: imageOf(album, album.name) }
 }
 
 function normalizeTrack(input) {
@@ -853,6 +873,23 @@ function skeletonPage() {
 
 function pageTitle(title, subtitle = '', action = '') {
   return `<div class="page-title-row"><div><h1>${escapeHtml(title)}</h1>${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ''}</div>${action}</div>`
+}
+
+function expandableDescriptionMarkup(value, limit = 180) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  if (text.length <= limit) return `<p class="entity-description-text">${escapeHtml(text)}</p>`
+  return `<p class="entity-description-text expandable-description" data-expandable-description>
+    <span data-description-summary>${escapeHtml(truncate(text, limit))}</span>
+    <span data-description-full hidden>${escapeHtml(text)}</span>
+    <button type="button" data-toggle-description aria-expanded="false">展开</button>
+  </p>`
+}
+
+function biographyTextMarkup(value) {
+  const text = String(value || '').replace(/\r\n?/g, '\n').trim()
+  if (!text) return ''
+  return text.split(/\n{2,}/).map((block) => `<p>${block.split('\n').map((line) => escapeHtml(line)).join('<br>')}</p>`).join('')
 }
 
 function renderCards(playlists) {
@@ -969,7 +1006,6 @@ async function renderPlaylist(payload) {
       tracks.forEach((track) => state.liked.add(String(track.id)))
       updateNowPlaying()
     }
-    const description = truncate(playlist.description, 180)
     const ownPlaylist = state.loggedIn && playlist.creatorId === String(state.profile?.userId || '')
     const subscribed = playlist.subscribed || state.userPlaylists.some((item) => String(item.id) === String(playlist.id) && item.creatorId !== String(state.profile?.userId || ''))
     const collectAction = ownPlaylist ? '' : `<button class="secondary-button ${subscribed ? 'active' : ''}" data-playlist-subscribe data-playlist-subscribed="${subscribed}">${icon('heart')} ${subscribed ? '已收藏' : '收藏歌单'}</button>`
@@ -977,7 +1013,7 @@ async function renderPlaylist(payload) {
       <section class="playlist-hero" style="--hero-image:url('${attr(playlist.cover)}')">
         <img class="playlist-cover" src="${attr(playlist.cover)}" alt="${attr(playlist.name)}">
         <div class="playlist-meta"><span class="eyebrow">歌单 · ${tracks.length || playlist.trackCount} 首</span><h1>${escapeHtml(playlist.name)}</h1>
-        ${playlist.creator ? `<p class="creator">${playlist.creatorId ? `<button type="button" class="creator-link" data-user-id="${attr(playlist.creatorId)}" data-user-name="${attr(playlist.creator)}">${escapeHtml(playlist.creator)}</button>` : escapeHtml(playlist.creator)}</p>` : ''}${description ? `<p>${escapeHtml(description)}</p>` : ''}
+        ${playlist.creator ? `<p class="creator">${playlist.creatorId ? `<button type="button" class="creator-link" data-user-id="${attr(playlist.creatorId)}" data-user-name="${attr(playlist.creator)}">${escapeHtml(playlist.creator)}</button>` : escapeHtml(playlist.creator)}</p>` : ''}${expandableDescriptionMarkup(playlist.description)}
         <div class="playlist-actions"><button class="primary-button" data-playlist-play-all>${icon('play')} 播放全部</button>${collectAction}<button class="secondary-button" data-toggle-playlist-search aria-expanded="false">${icon('search')} 搜索</button></div></div>
         <div id="playlistSearchPanel" class="playlist-search-panel" hidden>
           <label><svg><use href="#i-search"/></svg><input type="search" data-playlist-search placeholder="在歌单中搜索" autocomplete="off"></label>
@@ -989,6 +1025,87 @@ async function renderPlaylist(payload) {
     if (!tracks.length) state.pageTracks = []
   } catch (error) {
     renderError('歌单加载失败', error.message, () => renderPlaylist(payload))
+  }
+}
+
+function artistBiographyMarkup(description, artist) {
+  const brief = description?.briefDesc || artist?.briefDesc || ''
+  const introductions = Array.isArray(description?.introduction) ? description.introduction : []
+  const details = introductions
+    .filter((section) => String(section?.txt || '').trim())
+    .map((section) => `<section><h3>${escapeHtml(section?.ti || '介绍')}</h3>${biographyTextMarkup(section.txt)}</section>`)
+    .join('')
+  return {
+    brief,
+    details: details ? `<details class="entity-biography"><summary>详细介绍</summary><div>${details}</div></details>` : '',
+  }
+}
+
+async function renderArtist(payload) {
+  const id = String(payload?.id || payload || '')
+  const fallbackName = payload?.name || '歌手'
+  skeletonPage()
+  try {
+    const body = unwrap(await bridge.data.artist(id))
+    if (state.route !== 'artist' || String(state.routePayload?.id || state.routePayload || '') !== id) return
+    const detail = body?.detail || {}
+    const artist = detail?.data?.artist || detail?.artist || body?.artist || { id, name: fallbackName }
+    const tracks = (body?.songs || []).map(normalizeTrack)
+    const biography = artistBiographyMarkup(body?.description || {}, artist)
+    const name = artist.name || fallbackName
+    const cover = imageOf(artist, name)
+    state.pageTracks = tracks
+    dom.page.innerHTML = `<div class="page-inner entity-page">
+      <section class="playlist-hero entity-hero" style="--hero-image:url('${attr(cover)}')">
+        <img class="playlist-cover entity-cover artist-cover" src="${attr(cover)}" alt="${attr(name)}">
+        <div class="playlist-meta"><span class="eyebrow">歌手 · ${tracks.length || Number(artist.musicSize || 0)} 首歌曲</span><h1>${escapeHtml(name)}</h1>
+          ${expandableDescriptionMarkup(biography.brief, 220)}
+          <div class="playlist-actions"><button class="primary-button" data-play-all>${icon('play')} 播放全部</button></div>
+        </div>
+      </section>
+      ${biography.details}
+      <section><div class="section-title"><h2>歌曲 · ${tracks.length}</h2></div>${renderTrackTable(tracks, { emptyDescription: '暂时没有获取到这位歌手的歌曲。' })}</section>
+    </div>`
+  } catch (error) {
+    if (state.route === 'artist') renderError('歌手页面加载失败', error.message, () => renderArtist(payload))
+  }
+}
+
+async function renderAlbum(payload) {
+  const id = String(payload?.id || payload || '')
+  const fallbackName = payload?.name || '专辑'
+  skeletonPage()
+  try {
+    const body = unwrap(await bridge.data.album(id))
+    if (state.route !== 'album' || String(state.routePayload?.id || state.routePayload || '') !== id) return
+    const album = body?.album || body || { id, name: fallbackName }
+    const tracks = (body?.songs || album?.songs || []).map(normalizeTrack)
+    const name = album.name || fallbackName
+    const cover = imageOf(album, name)
+    const artists = (album.artists || (album.artist ? [album.artist] : []))
+      .filter((artist) => artist?.name)
+      .map((artist) => ({ id: String(artist.id || ''), name: String(artist.name) }))
+    const artistLinks = artists.map((artist) => artist.id
+      ? `<button type="button" class="creator-link" data-artist-id="${attr(artist.id)}" data-artist-name="${attr(artist.name)}">${escapeHtml(artist.name)}</button>`
+      : escapeHtml(artist.name)).join(' / ')
+    const published = Number(album.publishTime) > 0
+      ? new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' }).format(new Date(Number(album.publishTime)))
+      : ''
+    state.pageTracks = tracks
+    dom.page.innerHTML = `<div class="page-inner entity-page">
+      <section class="playlist-hero entity-hero" style="--hero-image:url('${attr(cover)}')">
+        <img class="playlist-cover entity-cover" src="${attr(cover)}" alt="${attr(name)}">
+        <div class="playlist-meta"><span class="eyebrow">专辑 · ${tracks.length || Number(album.size || 0)} 首</span><h1>${escapeHtml(name)}</h1>
+          ${artistLinks ? `<p class="creator">${artistLinks}</p>` : ''}
+          ${published ? `<p class="entity-published">${escapeHtml(published)}</p>` : ''}
+          ${expandableDescriptionMarkup(album.description || album.briefDesc, 220)}
+          <div class="playlist-actions"><button class="primary-button" data-play-all>${icon('play')} 播放全部</button></div>
+        </div>
+      </section>
+      <section><div class="section-title"><h2>歌曲 · ${tracks.length}</h2></div>${renderTrackTable(tracks, { emptyDescription: '暂时没有获取到这张专辑的歌曲。' })}</section>
+    </div>`
+  } catch (error) {
+    if (state.route === 'album') renderError('专辑页面加载失败', error.message, () => renderAlbum(payload))
   }
 }
 
@@ -1104,7 +1221,13 @@ function searchEntities(items, kind) {
     const name = item.name || item.nickname || '未命名'
     const cover = imageOf(item, name)
     const subtitle = kind === 'playlists' ? (item.creator?.nickname || `${Number(item.trackCount || 0)} 首`) : kind === 'albums' ? artistOf(item) : kind === 'artists' ? `${Number(item.musicSize || 0)} 首歌曲` : (item.signature || '网易云音乐用户')
-    const action = kind === 'playlists' ? `data-playlist-id="${attr(item.id)}"` : kind === 'users' ? `data-user-id="${attr(item.userId || item.id)}" data-user-name="${attr(name)}"` : `data-search-refine="${attr(name)}"`
+    const action = kind === 'playlists'
+      ? `data-playlist-id="${attr(item.id)}"`
+      : kind === 'users'
+        ? `data-user-id="${attr(item.userId || item.id)}" data-user-name="${attr(name)}"`
+        : kind === 'artists'
+          ? `data-artist-id="${attr(item.id)}" data-artist-name="${attr(name)}"`
+          : `data-album-id="${attr(item.id)}" data-album-name="${attr(name)}"`
     return `<button class="search-entity" ${action}><img ${thumbnailAttributes(cover, thumbnailPixelSize(48))} alt=""><span><strong>${escapeHtml(name)}</strong><small>${escapeHtml(subtitle)}</small></span></button>`
   }).join('')}</div></section>`
 }
@@ -1427,7 +1550,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.14.12-preview'
+  const version = '0.14.13-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
@@ -1589,6 +1712,8 @@ async function renderRoute() {
     case 'daily': return renderDaily()
     case 'liked': return renderLiked()
     case 'playlist': return renderPlaylist(state.routePayload)
+    case 'artist': return renderArtist(state.routePayload)
+    case 'album': return renderAlbum(state.routePayload)
     case 'user': return renderUser(state.routePayload)
     case 'recent':
       dom.page.innerHTML = `<div class="page-inner">${pageTitle('最近播放', state.recent.length ? `最近听过的 ${state.recent.length} 首歌` : '还没有播放记录', state.recent.length ? '<button type="button" class="secondary-button" data-clear-recent>清空</button>' : '')}${renderTrackTable(state.recent, { emptyDescription: '播放过的歌曲会出现在这里。' })}</div>`
@@ -1807,6 +1932,8 @@ function playbackSessionTrack(track) {
     cover: String(track.cover || ''),
     duration: Math.max(0, Number(track.duration) || 0),
     alias: String(track.alias || ''),
+    artists: artistsOfTrack(track),
+    albumInfo: albumOfTrack(track),
   }
 }
 
@@ -1824,7 +1951,10 @@ function restorePlaybackSessionTrack(track) {
     cover: String(track.cover || ''),
     duration: Math.max(0, Number(track.duration) || 0),
     alias: String(track.alias || ''),
-    raw: null,
+    raw: {
+      ar: Array.isArray(track.artists) ? track.artists : [],
+      al: track.albumInfo || null,
+    },
   }
 }
 
@@ -3781,6 +3911,8 @@ function showTrackMenu(anchor, track, point = null) {
   if (!track) return
   state.menuTrack = track
   state.menuPlaylist = null
+  const trackArtists = artistsOfTrack(track)
+  const trackAlbum = albumOfTrack(track)
   const playlistId = state.route === 'playlist' ? String(state.routePayload?.id || state.routePayload || '') : ''
   const ownPlaylists = state.userPlaylists.filter((playlist) => playlist.creatorId === String(state.profile?.userId || ''))
   const canRemove = state.loggedIn && ownPlaylists.some((playlist) => String(playlist.id) === playlistId)
@@ -3790,6 +3922,10 @@ function showTrackMenu(anchor, track, point = null) {
   dom.trackMenu.innerHTML = `<div class="track-menu-title">${escapeHtml(track.name)}</div>
     <button data-track-menu-action="play">${icon('play')}<span>播放</span></button>
     <button data-track-menu-action="next">${icon('next')}<span>下一首播放</span></button>
+    ${trackArtists.length === 1 ? `<button data-track-artist-id="${attr(trackArtists[0].id)}" data-track-artist-name="${attr(trackArtists[0].name)}">${icon('user')}<span>歌手：${escapeHtml(trackArtists[0].name)}</span></button>` : ''}
+    ${trackArtists.length > 1 ? `<button data-track-menu-action="choose-artist">${icon('user')}<span>歌手</span><small>›</small></button>
+      <div class="track-menu-playlists" data-menu-artists hidden>${trackArtists.map((artist) => `<button data-track-artist-id="${attr(artist.id)}" data-track-artist-name="${attr(artist.name)}"><span>${escapeHtml(artist.name)}</span></button>`).join('')}</div>` : ''}
+    ${trackAlbum ? `<button data-track-album-id="${attr(trackAlbum.id)}" data-track-album-name="${attr(trackAlbum.name)}">${icon('album')}<span>专辑：${escapeHtml(trackAlbum.name)}</span></button>` : ''}
     ${playlistChoices.length ? `<button data-track-menu-action="choose-playlist">${icon('list')}<span>添加到歌单</span><small>›</small></button>
       <div class="track-menu-playlists" data-menu-playlists hidden>${playlistChoices.map((playlist) => `<button data-add-playlist-id="${attr(playlist.id)}"><span>${escapeHtml(playlist.name)}</span></button>`).join('')}</div>` : ''}
     ${canRemove ? `<div class="track-menu-separator"></div><button class="danger" data-track-menu-action="remove" data-current-playlist-id="${attr(playlistId)}"><span>从歌单中移除</span></button>` : ''}`
@@ -5184,6 +5320,20 @@ function bindEvents() {
       return
     }
     const track = state.menuTrack
+    const artistLink = event.target.closest('[data-track-artist-id]')
+    if (artistLink && track) {
+      const payload = { id: artistLink.dataset.trackArtistId, name: artistLink.dataset.trackArtistName || '歌手' }
+      hideTrackMenu()
+      navigate('artist', payload)
+      return
+    }
+    const albumLink = event.target.closest('[data-track-album-id]')
+    if (albumLink && track) {
+      const payload = { id: albumLink.dataset.trackAlbumId, name: albumLink.dataset.trackAlbumName || '专辑' }
+      hideTrackMenu()
+      navigate('album', payload)
+      return
+    }
     const add = event.target.closest('[data-add-playlist-id]')
     if (add && track) {
       modifyPlaylist('add', add.dataset.addPlaylistId, track)
@@ -5202,6 +5352,13 @@ function bindEvents() {
     } else if (action.dataset.trackMenuAction === 'choose-playlist') {
       const choices = $('[data-menu-playlists]', dom.trackMenu)
       if (choices) choices.hidden = !choices.hidden
+      const artists = $('[data-menu-artists]', dom.trackMenu)
+      if (artists) artists.hidden = true
+    } else if (action.dataset.trackMenuAction === 'choose-artist') {
+      const artists = $('[data-menu-artists]', dom.trackMenu)
+      if (artists) artists.hidden = !artists.hidden
+      const choices = $('[data-menu-playlists]', dom.trackMenu)
+      if (choices) choices.hidden = true
     } else if (action.dataset.trackMenuAction === 'remove') {
       modifyPlaylist('del', action.dataset.currentPlaylistId, track)
       hideTrackMenu()
@@ -5497,6 +5654,19 @@ function bindEvents() {
 }
 
 function onPageClick(event) {
+  const descriptionToggle = event.target.closest('[data-toggle-description]')
+  if (descriptionToggle) {
+    const root = descriptionToggle.closest('[data-expandable-description]')
+    const summary = $('[data-description-summary]', root)
+    const full = $('[data-description-full]', root)
+    const expanded = descriptionToggle.getAttribute('aria-expanded') === 'true'
+    const next = !expanded
+    if (summary) summary.hidden = next
+    if (full) full.hidden = !next
+    descriptionToggle.setAttribute('aria-expanded', String(next))
+    descriptionToggle.textContent = next ? '收起' : '展开'
+    return
+  }
   const searchHistory = event.target.closest('[data-search-history]')
   if (searchHistory) {
     return navigate('search', { keywords: searchHistory.dataset.searchHistory, type: state.searchType || 1018 })
@@ -5522,6 +5692,10 @@ function onPageClick(event) {
   }
   const searchRefine = event.target.closest('[data-search-refine]')
   if (searchRefine) return navigate('search', { keywords: searchRefine.dataset.searchRefine, type: 1 })
+  const artist = event.target.closest('[data-artist-id]')
+  if (artist) return navigate('artist', { id: artist.dataset.artistId, name: artist.dataset.artistName || '歌手' })
+  const album = event.target.closest('[data-album-id]')
+  if (album) return navigate('album', { id: album.dataset.albumId, name: album.dataset.albumName || '专辑' })
   const user = event.target.closest('[data-user-id]')
   if (user) return navigate('user', { uid: user.dataset.userId, name: user.dataset.userName || '网易云用户' })
   const routeLink = event.target.closest('[data-route-link]')

@@ -1877,6 +1877,33 @@ function registerDataIpc() {
     callApi('playlist_detail', { id: String(id), s: 8 })
   ))
 
+  ipcMain.handle('data:artist', (_event, id) => guarded(async () => {
+    const artistId = String(id)
+    const loadSongs = async () => {
+      const songs = []
+      const limit = 100
+      let offset = 0
+      for (let page = 0; page < 20; page += 1) {
+        const response = await callApi('artist_songs', { id: artistId, order: 'hot', limit, offset })
+        const batch = Array.isArray(response?.songs) ? response.songs : []
+        songs.push(...batch)
+        offset += batch.length
+        if (!batch.length || response?.more === false || (Number(response?.total) > 0 && songs.length >= Number(response.total))) break
+      }
+      return songs
+    }
+    const [detail, description, songs] = await Promise.all([
+      callApi('artist_detail', { id: artistId }).catch(() => null),
+      callApi('artist_desc', { id: artistId }).catch(() => null),
+      loadSongs(),
+    ])
+    return { detail, description, songs }
+  }))
+
+  ipcMain.handle('data:album', (_event, id) => guarded(() =>
+    callApi('album', { id: String(id) })
+  ))
+
   ipcMain.handle('data:search', (_event, payload) => guarded(async () => {
     const allowedTypes = new Set([1, 10, 100, 1000, 1002, 1018])
     const requestedType = Number(payload?.type || 1)
