@@ -1877,27 +1877,40 @@ function registerDataIpc() {
     callApi('playlist_detail', { id: String(id), s: 8 })
   ))
 
-  ipcMain.handle('data:artist', (_event, id) => guarded(async () => {
-    const artistId = String(id)
-    const loadSongs = async () => {
-      const songs = []
-      const limit = 100
-      let offset = 0
-      for (let page = 0; page < 20; page += 1) {
-        const response = await callApi('artist_songs', { id: artistId, order: 'hot', limit, offset })
-        const batch = Array.isArray(response?.songs) ? response.songs : []
-        songs.push(...batch)
-        offset += batch.length
-        if (!batch.length || response?.more === false || (Number(response?.total) > 0 && songs.length >= Number(response.total))) break
-      }
-      return songs
-    }
-    const [detail, description, songs] = await Promise.all([
+  ipcMain.handle('data:artist', (_event, payload) => guarded(async () => {
+    const artistId = String(payload?.id ?? payload)
+    const limit = Math.max(20, Math.min(100, Number(payload?.limit) || 100))
+    const [detail, description, songPage] = await Promise.all([
       callApi('artist_detail', { id: artistId }).catch(() => null),
       callApi('artist_desc', { id: artistId }).catch(() => null),
-      loadSongs(),
+      callApi('artist_songs', { id: artistId, order: 'hot', limit, offset: 0 }),
     ])
-    return { detail, description, songs }
+    const songs = Array.isArray(songPage?.songs) ? songPage.songs : []
+    const total = Number(songPage?.total || 0)
+    return {
+      detail,
+      description,
+      songs,
+      more: songPage?.more === true || (total > songs.length),
+      total,
+      limit,
+    }
+  }))
+
+  ipcMain.handle('data:artist-songs', (_event, payload) => guarded(async () => {
+    const artistId = String(payload?.id || '')
+    const limit = Math.max(20, Math.min(100, Number(payload?.limit) || 100))
+    const offset = Math.max(0, Number(payload?.offset) || 0)
+    const response = await callApi('artist_songs', { id: artistId, order: 'hot', limit, offset })
+    const songs = Array.isArray(response?.songs) ? response.songs : []
+    const total = Number(response?.total || 0)
+    return {
+      songs,
+      more: response?.more === true || (total > offset + songs.length),
+      total,
+      offset,
+      limit,
+    }
   }))
 
   ipcMain.handle('data:album', (_event, id) => guarded(() =>

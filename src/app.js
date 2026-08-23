@@ -875,21 +875,26 @@ function pageTitle(title, subtitle = '', action = '') {
   return `<div class="page-title-row"><div><h1>${escapeHtml(title)}</h1>${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ''}</div>${action}</div>`
 }
 
-function expandableDescriptionMarkup(value, limit = 180) {
+function expandableDescriptionMarkup(value, lines = 3) {
   const text = String(value || '').trim()
   if (!text) return ''
-  if (text.length <= limit) return `<p class="entity-description-text">${escapeHtml(text)}</p>`
-  return `<p class="entity-description-text expandable-description" data-expandable-description>
-    <span data-description-summary>${escapeHtml(truncate(text, limit))}</span>
-    <span data-description-full hidden>${escapeHtml(text)}</span>
-    <button type="button" data-toggle-description aria-expanded="false">展开</button>
-  </p>`
+  return `<div class="entity-description-text expandable-description is-collapsed" data-expandable-description style="--description-lines:${Math.max(1, Number(lines) || 3)}">
+    <span data-description-content>${escapeHtml(text)}</span>
+    <button type="button" data-toggle-description aria-expanded="false" hidden>展开</button>
+  </div>`
 }
 
-function biographyTextMarkup(value) {
-  const text = String(value || '').replace(/\r\n?/g, '\n').trim()
-  if (!text) return ''
-  return text.split(/\n{2,}/).map((block) => `<p>${block.split('\n').map((line) => escapeHtml(line)).join('<br>')}</p>`).join('')
+function refreshExpandableDescription(root) {
+  const content = $('[data-description-content]', root)
+  const toggle = $('[data-toggle-description]', root)
+  if (!content || !toggle || !root.classList.contains('is-collapsed')) return
+  toggle.hidden = !(content.scrollHeight > content.clientHeight + 1)
+}
+
+function hydrateExpandableDescriptions(container = dom.page) {
+  const roots = $$('[data-expandable-description]', container)
+  if (!roots.length) return
+  requestAnimationFrame(() => roots.forEach(refreshExpandableDescription))
 }
 
 function renderCards(playlists) {
@@ -1013,7 +1018,7 @@ async function renderPlaylist(payload) {
       <section class="playlist-hero" style="--hero-image:url('${attr(playlist.cover)}')">
         <img class="playlist-cover" src="${attr(playlist.cover)}" alt="${attr(playlist.name)}">
         <div class="playlist-meta"><span class="eyebrow">歌单 · ${tracks.length || playlist.trackCount} 首</span><h1>${escapeHtml(playlist.name)}</h1>
-        ${playlist.creator ? `<p class="creator">${playlist.creatorId ? `<button type="button" class="creator-link" data-user-id="${attr(playlist.creatorId)}" data-user-name="${attr(playlist.creator)}">${escapeHtml(playlist.creator)}</button>` : escapeHtml(playlist.creator)}</p>` : ''}${expandableDescriptionMarkup(playlist.description)}
+        ${playlist.creator ? `<p class="creator">${playlist.creatorId ? `<button type="button" class="creator-link" data-user-id="${attr(playlist.creatorId)}" data-user-name="${attr(playlist.creator)}">${escapeHtml(playlist.creator)}</button>` : escapeHtml(playlist.creator)}</p>` : ''}${expandableDescriptionMarkup(playlist.description, 2)}
         <div class="playlist-actions"><button class="primary-button" data-playlist-play-all>${icon('play')} 播放全部</button>${collectAction}<button class="secondary-button" data-toggle-playlist-search aria-expanded="false">${icon('search')} 搜索</button></div></div>
         <div id="playlistSearchPanel" class="playlist-search-panel" hidden>
           <label><svg><use href="#i-search"/></svg><input type="search" data-playlist-search placeholder="在歌单中搜索" autocomplete="off"></label>
@@ -1023,51 +1028,86 @@ async function renderPlaylist(payload) {
       <div id="playlistTrackList">${tracks.length ? renderTrackTable(tracks) : '<div class="empty-state playlist-empty-state"><div class="empty-state-inner"><div class="empty-icon">' + icon('list') + '</div><h2>这个歌单还没有歌曲</h2><p>以后再次打开时，MenoRadio 会重新同步歌单内容。</p></div></div>'}</div>
     </div>`
     if (!tracks.length) state.pageTracks = []
+    hydrateExpandableDescriptions()
   } catch (error) {
     renderError('歌单加载失败', error.message, () => renderPlaylist(payload))
-  }
-}
-
-function artistBiographyMarkup(description, artist) {
-  const brief = description?.briefDesc || artist?.briefDesc || ''
-  const introductions = Array.isArray(description?.introduction) ? description.introduction : []
-  const details = introductions
-    .filter((section) => String(section?.txt || '').trim())
-    .map((section) => `<section><h3>${escapeHtml(section?.ti || '介绍')}</h3>${biographyTextMarkup(section.txt)}</section>`)
-    .join('')
-  return {
-    brief,
-    details: details ? `<details class="entity-biography"><summary>详细介绍</summary><div>${details}</div></details>` : '',
   }
 }
 
 async function renderArtist(payload) {
   const id = String(payload?.id || payload || '')
   const fallbackName = payload?.name || '歌手'
+  const pageSize = 100
   skeletonPage()
   try {
-    const body = unwrap(await bridge.data.artist(id))
+    const body = unwrap(await bridge.data.artist(id, pageSize))
     if (state.route !== 'artist' || String(state.routePayload?.id || state.routePayload || '') !== id) return
     const detail = body?.detail || {}
     const artist = detail?.data?.artist || detail?.artist || body?.artist || { id, name: fallbackName }
     const tracks = (body?.songs || []).map(normalizeTrack)
-    const biography = artistBiographyMarkup(body?.description || {}, artist)
+    const biography = body?.description?.briefDesc || artist?.briefDesc || ''
     const name = artist.name || fallbackName
     const cover = imageOf(artist, name)
+    const total = Math.max(Number(body?.total || 0), Number(artist.musicSize || 0), tracks.length)
+    const hasMore = body?.more === true || (body?.more !== false && tracks.length < total)
     state.pageTracks = tracks
     dom.page.innerHTML = `<div class="page-inner entity-page">
       <section class="playlist-hero entity-hero" style="--hero-image:url('${attr(cover)}')">
         <img class="playlist-cover entity-cover artist-cover" src="${attr(cover)}" alt="${attr(name)}">
-        <div class="playlist-meta"><span class="eyebrow">歌手 · ${tracks.length || Number(artist.musicSize || 0)} 首歌曲</span><h1>${escapeHtml(name)}</h1>
-          ${expandableDescriptionMarkup(biography.brief, 220)}
+        <div class="playlist-meta"><span class="eyebrow">歌手 · ${total} 首歌曲</span><h1>${escapeHtml(name)}</h1>
+          ${expandableDescriptionMarkup(biography, 2)}
           <div class="playlist-actions"><button class="primary-button" data-play-all>${icon('play')} 播放全部</button></div>
         </div>
       </section>
-      ${biography.details}
-      <section><div class="section-title"><h2>歌曲 · ${tracks.length}</h2></div>${renderTrackTable(tracks, { emptyDescription: '暂时没有获取到这位歌手的歌曲。' })}</section>
+      <section><div class="section-title"><h2 data-artist-song-count>歌曲 · ${tracks.length}${hasMore ? ` / ${total}` : ''}</h2></div>
+        <div data-artist-track-list>${renderTrackTable(tracks, { emptyDescription: '暂时没有获取到这位歌手的歌曲。' })}</div>
+        ${hasMore ? `<p class="entity-load-status" data-artist-load-status>正在加载其余歌曲…</p>` : ''}
+      </section>
     </div>`
+    hydrateExpandableDescriptions()
+    if (hasMore) void loadRemainingArtistSongs(id, tracks, total, pageSize)
   } catch (error) {
     if (state.route === 'artist') renderError('歌手页面加载失败', error.message, () => renderArtist(payload))
+  }
+}
+
+async function loadRemainingArtistSongs(id, initialTracks, expectedTotal, pageSize) {
+  const tracks = [...initialTracks]
+  const knownIds = new Set(tracks.map((track) => String(track.id)))
+  let offset = initialTracks.length
+  let more = true
+  let total = expectedTotal
+  try {
+    while (more && offset < 5000) {
+      if (state.route !== 'artist' || String(state.routePayload?.id || state.routePayload || '') !== id) return
+      const body = unwrap(await bridge.data.artistSongs(id, offset, pageSize))
+      const batch = Array.isArray(body?.songs) ? body.songs : []
+      if (!batch.length) break
+      for (const item of batch) {
+        const track = normalizeTrack(item)
+        if (!knownIds.has(String(track.id))) {
+          knownIds.add(String(track.id))
+          tracks.push(track)
+        }
+      }
+      offset += batch.length
+      total = Math.max(total, Number(body?.total || 0), tracks.length)
+      more = body?.more !== false && (Number(body?.total || 0) > 0 ? offset < total : batch.length >= pageSize)
+      const status = $('[data-artist-load-status]', dom.page)
+      if (status) status.textContent = `正在加载其余歌曲… ${tracks.length} / ${total}`
+    }
+    if (state.route !== 'artist' || String(state.routePayload?.id || state.routePayload || '') !== id) return
+    const list = $('[data-artist-track-list]', dom.page)
+    const heading = $('[data-artist-song-count]', dom.page)
+    const status = $('[data-artist-load-status]', dom.page)
+    state.pageTracks = tracks
+    if (list) list.innerHTML = renderTrackTable(tracks, { emptyDescription: '暂时没有获取到这位歌手的歌曲。' })
+    if (heading) heading.textContent = `歌曲 · ${tracks.length}`
+    status?.remove()
+  } catch {
+    if (state.route !== 'artist' || String(state.routePayload?.id || state.routePayload || '') !== id) return
+    const status = $('[data-artist-load-status]', dom.page)
+    if (status) status.textContent = `已加载 ${tracks.length} 首，其余歌曲暂时无法载入`
   }
 }
 
@@ -1098,12 +1138,13 @@ async function renderAlbum(payload) {
         <div class="playlist-meta"><span class="eyebrow">专辑 · ${tracks.length || Number(album.size || 0)} 首</span><h1>${escapeHtml(name)}</h1>
           ${artistLinks ? `<p class="creator">${artistLinks}</p>` : ''}
           ${published ? `<p class="entity-published">${escapeHtml(published)}</p>` : ''}
-          ${expandableDescriptionMarkup(album.description || album.briefDesc, 220)}
+          ${expandableDescriptionMarkup(album.description || album.briefDesc, 2)}
           <div class="playlist-actions"><button class="primary-button" data-play-all>${icon('play')} 播放全部</button></div>
         </div>
       </section>
       <section><div class="section-title"><h2>歌曲 · ${tracks.length}</h2></div>${renderTrackTable(tracks, { emptyDescription: '暂时没有获取到这张专辑的歌曲。' })}</section>
     </div>`
+    hydrateExpandableDescriptions()
   } catch (error) {
     if (state.route === 'album') renderError('专辑页面加载失败', error.message, () => renderAlbum(payload))
   }
@@ -5657,14 +5698,12 @@ function onPageClick(event) {
   const descriptionToggle = event.target.closest('[data-toggle-description]')
   if (descriptionToggle) {
     const root = descriptionToggle.closest('[data-expandable-description]')
-    const summary = $('[data-description-summary]', root)
-    const full = $('[data-description-full]', root)
     const expanded = descriptionToggle.getAttribute('aria-expanded') === 'true'
     const next = !expanded
-    if (summary) summary.hidden = next
-    if (full) full.hidden = !next
+    root?.classList.toggle('is-collapsed', !next)
     descriptionToggle.setAttribute('aria-expanded', String(next))
     descriptionToggle.textContent = next ? '收起' : '展开'
+    if (!next && root) requestAnimationFrame(() => refreshExpandableDescription(root))
     return
   }
   const searchHistory = event.target.closest('[data-search-history]')
