@@ -27,6 +27,8 @@ const {
   playbackSegmentBytes,
   playbackRangeMinimumBytes,
   playbackRangeIsPrimed,
+  playbackTransferBytesPerSecond,
+  beginPlaybackRange,
   requestedByteRange,
   parseContentRange,
 } = require('./playback-stream.cjs')
@@ -298,6 +300,7 @@ function playbackSourceUrl(payload = {}) {
     bufferKnown: false,
     bufferGateClosed: false,
     seekPrimingUntil: 0,
+    seekRangePending: false,
     starving: false,
     paused: false,
     bufferWaiters: new Set(),
@@ -396,9 +399,7 @@ function cancellableDelay(milliseconds, reader) {
 
 async function reservePlaybackBandwidth(source, reader, byteLength) {
   const now = Date.now()
-  const rate = reader.startupBytesRemaining > 0
-    ? source.burstBytesPerSecond
-    : source.cruiseBytesPerSecond
+  const rate = playbackTransferBytesPerSecond(source, reader, now)
   const start = Math.max(now, source.availableAt)
   source.availableAt = start + Math.ceil((byteLength / Math.max(1, rate)) * 1000)
   await cancellableDelay(Math.max(0, start - now), reader)
@@ -512,6 +513,11 @@ async function readSegmentedPlayback(source, protocolRequest) {
     })
   }
   source.activeReader?.cancel()
+  // Start the short seek burst when Chromium actually asks for the new byte
+  // range. Starting it at pointer-up spent part of the window before any
+  // bytes could arrive, which occasionally left high-bitrate tracks in a
+  // play-for-two-seconds / wait-for-one-second cycle after a backward seek.
+  beginPlaybackRange(source)
   // A fresh byte range must never inherit the previous range's buffered-ahead
   // decision. Chromium commonly opens this request while completing a seek.
   source.bufferAheadSeconds = 0

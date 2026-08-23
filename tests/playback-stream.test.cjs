@@ -12,6 +12,8 @@ const {
   playbackSegmentBytes,
   playbackRangeMinimumBytes,
   playbackRangeIsPrimed,
+  playbackTransferBytesPerSecond,
+  beginPlaybackRange,
   resetPlaybackBufferForSeek,
   requestedByteRange,
   parseContentRange,
@@ -79,8 +81,29 @@ test('seeking clears stale buffered-ahead state and temporarily opens the gate',
   assert.equal(source.bufferKnown, false)
   assert.equal(source.bufferGateClosed, false)
   assert.equal(source.rangeBytesPumped, 0)
+  assert.equal(source.seekRangePending, true)
   assert.equal(source.availableAt, 4000)
   assert.equal(source.seekPrimingUntil, 4000 + PLAYBACK_SEEK_PRIMING_MS)
+})
+
+test('a seek burst begins with the replacement range and stays bounded', () => {
+  const source = {
+    cruiseBytesPerSecond: 200000,
+    burstBytesPerSecond: 900000,
+    seekPrimingUntil: 6800,
+    seekRangePending: true,
+    availableAt: 5000,
+    cancelled: false,
+  }
+  const reader = { startupBytesRemaining: 0 }
+  assert.equal(beginPlaybackRange(source, 4500), true)
+  assert.equal(source.seekRangePending, false)
+  assert.equal(source.seekPrimingUntil, 4500 + PLAYBACK_SEEK_PRIMING_MS)
+  assert.equal(source.availableAt, 4500)
+  assert.equal(playbackTransferBytesPerSecond(source, reader, 5000), 900000)
+  assert.equal(playbackTransferBytesPerSecond(source, reader, 8000), 200000)
+  reader.startupBytesRemaining = 1
+  assert.equal(playbackTransferBytesPerSecond(source, reader, 8000), 900000)
 })
 
 test('a fresh range must provide its own playable bytes before the buffer gate can close', () => {

@@ -68,6 +68,29 @@ function playbackRangeIsPrimed(source = {}) {
     >= Math.max(0, Number(source.rangeMinimumBytes) || 0)
 }
 
+function playbackTransferBytesPerSecond(source = {}, reader = {}, now = Date.now()) {
+  const timestamp = Number.isFinite(Number(now)) ? Number(now) : Date.now()
+  const primingAfterSeek = timestamp < Math.max(0, Number(source.seekPrimingUntil) || 0)
+  return (Math.max(0, Number(reader.startupBytesRemaining) || 0) > 0 || primingAfterSeek)
+    ? Math.max(1, Number(source.burstBytesPerSecond) || 0)
+    : Math.max(1, Number(source.cruiseBytesPerSecond) || 0)
+}
+
+function beginPlaybackRange(source, now = Date.now()) {
+  if (!source?.seekRangePending || source.cancelled) return false
+  const timestamp = Number.isFinite(Number(now)) ? Number(now) : Date.now()
+  source.seekRangePending = false
+  // The protocol request is local, so a request arriving much later is not
+  // part of this seek. Do not accidentally grant a future range a new burst.
+  if (timestamp > (Number(source.seekPrimingUntil) || 0) + PLAYBACK_SEEK_PRIMING_MS) return false
+  source.seekPrimingUntil = timestamp + PLAYBACK_SEEK_PRIMING_MS
+  source.availableAt = Math.min(
+    Number.isFinite(Number(source.availableAt)) ? Number(source.availableAt) : timestamp,
+    timestamp,
+  )
+  return true
+}
+
 function resetPlaybackBufferForSeek(source, now = Date.now()) {
   if (!source || source.cancelled) return false
   const timestamp = Number.isFinite(Number(now)) ? Number(now) : Date.now()
@@ -75,6 +98,7 @@ function resetPlaybackBufferForSeek(source, now = Date.now()) {
   source.bufferKnown = false
   source.bufferGateClosed = false
   source.rangeBytesPumped = 0
+  source.seekRangePending = true
   source.seekPrimingUntil = timestamp + PLAYBACK_SEEK_PRIMING_MS
   source.availableAt = Math.min(
     Number.isFinite(Number(source.availableAt)) ? Number(source.availableAt) : timestamp,
@@ -128,6 +152,8 @@ module.exports = {
   playbackSegmentBytes,
   playbackRangeMinimumBytes,
   playbackRangeIsPrimed,
+  playbackTransferBytesPerSecond,
+  beginPlaybackRange,
   resetPlaybackBufferForSeek,
   parseByteRange,
   requestedByteRange,
