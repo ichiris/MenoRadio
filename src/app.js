@@ -875,10 +875,10 @@ function pageTitle(title, subtitle = '', action = '') {
   return `<div class="page-title-row"><div><h1>${escapeHtml(title)}</h1>${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ''}</div>${action}</div>`
 }
 
-function expandableDescriptionMarkup(value, lines = 3) {
+function expandableDescriptionMarkup(value, lines = 1) {
   const text = String(value || '').trim()
   if (!text) return ''
-  return `<div class="entity-description-text expandable-description is-collapsed" data-expandable-description style="--description-lines:${Math.max(1, Number(lines) || 3)}">
+  return `<div class="entity-description-text expandable-description is-collapsed" data-expandable-description style="--description-lines:${Math.max(1, Number(lines) || 1)}">
     <span data-description-content>${escapeHtml(text)}</span>
     <button type="button" data-toggle-description aria-expanded="false" hidden>展开</button>
   </div>`
@@ -913,8 +913,10 @@ function renderTrackTable(tracks, options = {}) {
   state.selectedTrackIndex = -1
   if (!tracks.length) {
     const title = options.emptyTitle || '这里还是空的'
-    const description = options.emptyDescription || '换个关键词，或者稍后再回来看看。'
-    return `<div class="empty-state"><div class="empty-state-inner"><div class="empty-icon">${icon('list')}</div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(description)}</p></div></div>`
+    const description = Object.prototype.hasOwnProperty.call(options, 'emptyDescription')
+      ? options.emptyDescription
+      : '换个关键词，或者稍后再回来看看。'
+    return `<div class="empty-state"><div class="empty-state-inner"><div class="empty-icon">${icon('list')}</div><h2>${escapeHtml(title)}</h2>${description ? `<p>${escapeHtml(description)}</p>` : ''}</div></div>`
   }
   return `<div class="track-section">${tracks.map((track, index) => `<div class="track-row ${state.current?.id === track.id ? 'playing' : ''}" data-track-index="${index}" role="button" tabindex="0" draggable="true">
     <span class="track-index">${String(index + 1).padStart(2, '0')}</span>
@@ -1018,7 +1020,7 @@ async function renderPlaylist(payload) {
       <section class="playlist-hero" style="--hero-image:url('${attr(playlist.cover)}')">
         <img class="playlist-cover" src="${attr(playlist.cover)}" alt="${attr(playlist.name)}">
         <div class="playlist-meta"><span class="eyebrow">歌单 · ${tracks.length || playlist.trackCount} 首</span><h1>${escapeHtml(playlist.name)}</h1>
-        ${playlist.creator ? `<p class="creator">${playlist.creatorId ? `<button type="button" class="creator-link" data-user-id="${attr(playlist.creatorId)}" data-user-name="${attr(playlist.creator)}">${escapeHtml(playlist.creator)}</button>` : escapeHtml(playlist.creator)}</p>` : ''}${expandableDescriptionMarkup(playlist.description, 2)}
+        ${playlist.creator ? `<p class="creator">${playlist.creatorId ? `<button type="button" class="creator-link" data-user-id="${attr(playlist.creatorId)}" data-user-name="${attr(playlist.creator)}">${escapeHtml(playlist.creator)}</button>` : escapeHtml(playlist.creator)}</p>` : ''}${expandableDescriptionMarkup(playlist.description)}
         <div class="playlist-actions"><button class="primary-button" data-playlist-play-all>${icon('play')} 播放全部</button>${collectAction}<button class="secondary-button" data-toggle-playlist-search aria-expanded="false">${icon('search')} 搜索</button></div></div>
         <div id="playlistSearchPanel" class="playlist-search-panel" hidden>
           <label><svg><use href="#i-search"/></svg><input type="search" data-playlist-search placeholder="在歌单中搜索" autocomplete="off"></label>
@@ -1055,12 +1057,12 @@ async function renderArtist(payload) {
       <section class="playlist-hero entity-hero" style="--hero-image:url('${attr(cover)}')">
         <img class="playlist-cover entity-cover artist-cover" src="${attr(cover)}" alt="${attr(name)}">
         <div class="playlist-meta"><span class="eyebrow">歌手 · ${total} 首歌曲</span><h1>${escapeHtml(name)}</h1>
-          ${expandableDescriptionMarkup(biography, 2)}
+          ${expandableDescriptionMarkup(biography)}
           <div class="playlist-actions"><button class="primary-button" data-play-all>${icon('play')} 播放全部</button></div>
         </div>
       </section>
       <section><div class="section-title"><h2 data-artist-song-count>歌曲 · ${tracks.length}${hasMore ? ` / ${total}` : ''}</h2></div>
-        <div data-artist-track-list>${renderTrackTable(tracks, { emptyDescription: '暂时没有获取到这位歌手的歌曲。' })}</div>
+        <div data-artist-track-list>${renderTrackTable(tracks, { emptyTitle: '暂无歌曲', emptyDescription: '' })}</div>
         ${hasMore ? `<p class="entity-load-status" data-artist-load-status>正在加载其余歌曲…</p>` : ''}
       </section>
     </div>`
@@ -1101,7 +1103,7 @@ async function loadRemainingArtistSongs(id, initialTracks, expectedTotal, pageSi
     const heading = $('[data-artist-song-count]', dom.page)
     const status = $('[data-artist-load-status]', dom.page)
     state.pageTracks = tracks
-    if (list) list.innerHTML = renderTrackTable(tracks, { emptyDescription: '暂时没有获取到这位歌手的歌曲。' })
+    if (list) list.innerHTML = renderTrackTable(tracks, { emptyTitle: '暂无歌曲', emptyDescription: '' })
     if (heading) heading.textContent = `歌曲 · ${tracks.length}`
     status?.remove()
   } catch {
@@ -1138,11 +1140,11 @@ async function renderAlbum(payload) {
         <div class="playlist-meta"><span class="eyebrow">专辑 · ${tracks.length || Number(album.size || 0)} 首</span><h1>${escapeHtml(name)}</h1>
           ${artistLinks ? `<p class="creator">${artistLinks}</p>` : ''}
           ${published ? `<p class="entity-published">${escapeHtml(published)}</p>` : ''}
-          ${expandableDescriptionMarkup(album.description || album.briefDesc, 2)}
+          ${expandableDescriptionMarkup(album.description || album.briefDesc)}
           <div class="playlist-actions"><button class="primary-button" data-play-all>${icon('play')} 播放全部</button></div>
         </div>
       </section>
-      <section><div class="section-title"><h2>歌曲 · ${tracks.length}</h2></div>${renderTrackTable(tracks, { emptyDescription: '暂时没有获取到这张专辑的歌曲。' })}</section>
+      <section><div class="section-title"><h2>歌曲 · ${tracks.length}</h2></div>${renderTrackTable(tracks, { emptyTitle: '暂无歌曲', emptyDescription: '' })}</section>
     </div>`
     hydrateExpandableDescriptions()
   } catch (error) {

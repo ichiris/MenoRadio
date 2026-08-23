@@ -215,9 +215,8 @@ img[data-thumbnail-state="ready"] { opacity: 1; }
 .playlist-meta p { color: var(--text-soft); line-height: 1.6; max-width: 720px; }.playlist-meta .creator { color: var(--accent-strong); font-weight: 600; }.creator-link { appearance: none; border: 0; padding: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }.creator-link:hover { color: white; text-decoration: underline; text-underline-offset: 3px; }
 .entity-description-text { position: relative; width: 100%; max-width: 720px; margin: 8px 0 0; color: var(--text-soft); line-height: 1.6; }
 .expandable-description [data-description-content] { display: block; white-space: pre-line; overflow-wrap: anywhere; }
-.expandable-description.is-collapsed [data-description-content] { display: -webkit-box; padding-right: 46px; -webkit-box-orient: vertical; -webkit-line-clamp: var(--description-lines, 2); overflow: hidden; }
-.expandable-description [data-toggle-description] { margin-top: 2px; padding: 0; border: 0; background: transparent; color: var(--accent-strong); font: inherit; font-weight: 650; cursor: pointer; }
-.expandable-description.is-collapsed [data-toggle-description] { position: absolute; right: 0; bottom: 0; margin: 0; padding-left: 10px; background: linear-gradient(90deg, transparent, rgba(39,36,43,.96) 34%); }
+.expandable-description.is-collapsed [data-description-content] { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--description-lines, 1); overflow: hidden; }
+.expandable-description [data-toggle-description] { display: block; margin-top: 3px; padding: 0; border: 0; background: transparent; color: var(--accent-strong); font: inherit; font-weight: 650; cursor: pointer; }
 .expandable-description [data-toggle-description]:hover { color: white; text-decoration: underline; text-underline-offset: 3px; }
 .entity-published { margin: 3px 0; font-size: 12px; }
 .artist-cover { border-radius: 50%; }
