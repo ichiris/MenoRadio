@@ -1743,8 +1743,14 @@ function setImmersiveVolumePopover(open, { temporary = false } = {}) {
   if (state.immersiveVolumeTemporary) {
     state.immersiveVolumeCloseTimer = window.setTimeout(() => {
       setImmersiveVolumePopover(false)
-    }, 2000)
+    }, 1000)
   }
+}
+
+function pauseImmersiveVolumeAutoClose() {
+  if (!state.immersiveVolumeTemporary) return
+  clearTimeout(state.immersiveVolumeCloseTimer)
+  state.immersiveVolumeCloseTimer = 0
 }
 
 function adjustImmersiveVolumeFromWheel(event) {
@@ -4671,6 +4677,13 @@ function bindEvents() {
   $('#volumeWheelZone').addEventListener('wheel', adjustVolumeFromWheel, { passive: false })
   $('#immersiveVolume').addEventListener('wheel', adjustImmersiveVolumeFromWheel, { passive: false })
   $('#immersiveVolumePopover').addEventListener('wheel', adjustImmersiveVolumeFromWheel, { passive: false })
+  $('#immersiveVolume').addEventListener('mouseenter', () => {
+    if (state.immersiveVolumeTemporary) setImmersiveVolumePopover(true, { temporary: true })
+  })
+  $('#immersiveVolumePopover').addEventListener('mouseenter', pauseImmersiveVolumeAutoClose)
+  $('.immersive-volume-control').addEventListener('mouseleave', () => {
+    if (state.immersiveVolumeTemporary) setImmersiveVolumePopover(false)
+  })
   $('#immersiveVolume').addEventListener('click', (event) => {
     event.stopPropagation()
     const popover = $('#immersiveVolumePopover')
