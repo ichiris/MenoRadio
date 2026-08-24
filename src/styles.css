@@ -208,10 +208,10 @@ img[data-thumbnail-state="ready"] { opacity: 1; }
 .track-name { color: #eeeaf0; font-weight: 520; }.track-artist, .track-album { color: #95909a; font-size: 12px; }
 .track-duration { color: #8d8892; text-align: right; font-size: 12px; }.track-more { opacity: 0; }.track-row:hover .track-more { opacity: 1; }
 
-.playlist-hero { min-height: 250px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: linear-gradient(120deg, rgba(255,255,255,.065), rgba(255,255,255,.025)); display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 0 28px; padding: 22px; margin: 8px 0 14px; position: relative; overflow: hidden; }
+.playlist-hero { min-height: 250px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: linear-gradient(120deg, rgba(255,255,255,.065), rgba(255,255,255,.025)); display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0 28px; padding: 22px; margin: 8px 0 14px; position: relative; overflow: hidden; }
 .playlist-hero::before { content: ""; position: absolute; inset: -60%; background: var(--hero-image); background-position: center; background-size: cover; filter: blur(80px) saturate(.8); opacity: .14; }
 .playlist-cover { width: 202px; height: 202px; object-fit: cover; border-radius: 9px; box-shadow: 0 18px 40px rgba(0,0,0,.3); position: relative; }
-.playlist-meta { position: relative; min-width: 0; min-height: 202px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; }.playlist-meta h1 { font-size: clamp(25px, 3vw, 37px); margin: 7px 0 12px; letter-spacing: -.8px; }
+.playlist-meta { position: relative; min-width: 0; }.playlist-meta h1 { font-size: clamp(25px, 3vw, 37px); margin: 7px 0 12px; letter-spacing: -.8px; }
 .playlist-meta p { color: var(--text-soft); line-height: 1.6; max-width: 720px; }.playlist-meta .creator { color: var(--accent-strong); font-weight: 600; }.creator-link { appearance: none; border: 0; padding: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }.creator-link:hover { color: white; text-decoration: underline; text-underline-offset: 3px; }
 .entity-description-text { position: relative; width: 100%; max-width: 720px; margin: 8px 0 0; color: var(--text-soft); line-height: 1.6; }
 .expandable-description [data-description-content] { display: block; white-space: pre-line; overflow-wrap: anywhere; }
