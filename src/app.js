@@ -1615,7 +1615,9 @@ function renderSettings() {
   const version = '0.14.14-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
+      <h2 class="settings-section-label">账户</h2>
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
+      <h2 class="settings-section-label">外观</h2>
       <section class="settings-card theme-setting-card"><div><h3>主题</h3></div>${choicePickerMarkup('theme', state.theme, themes, '主题')}</section>
       <section class="settings-card font-setting-card"><div><h3>字体</h3></div><div class="font-picker-control">
         <button type="button" class="setting-picker" data-font-picker aria-expanded="false"><span style="font-family:${attr(fontCss(state.fontFamily))}">${escapeHtml(fontLabel(state.fontFamily))}</span><svg><use href="#i-chevron"/></svg></button>
@@ -1624,12 +1626,15 @@ function renderSettings() {
           <div class="font-picker-list" data-font-list>${fontOptionsMarkup()}</div>
         </div>
       </div></section>
+      <h2 class="settings-section-label">播放</h2>
       <section class="settings-card quality-setting-card"><div><h3>音质</h3></div>${choicePickerMarkup('audio-quality', state.audioQuality, audioQualities, '音质')}</section>
       <section class="settings-card"><div><h3>音量均衡</h3></div><label class="setting-switch" title="按歌曲的 ReplayGain 固定调整播放增益"><input type="checkbox" data-audio-normalization ${state.audioNormalization ? 'checked' : ''}><i></i></label></section>
       <section class="settings-card"><div><h3>媒体加载优化</h3></div><label class="setting-switch"><input type="checkbox" data-media-loading-optimization ${state.mediaLoadingOptimization ? 'checked' : ''}><i></i></label></section>
       <section class="settings-card"><div><h3>快捷呼出播放队列</h3></div><label class="setting-switch" title="鼠标贴近窗口右侧时呼出播放队列"><input type="checkbox" data-quick-queue-reveal ${state.quickQueueReveal ? 'checked' : ''}><i></i></label></section>
       <button type="button" class="settings-card settings-navigation-card" data-route-link="settings-floating"><h3>悬浮歌词</h3><svg><use href="#i-chevron"/></svg></button>
+      <h2 class="settings-section-label">数据</h2>
       <section class="settings-card data-management-card"><div><h3>数据管理</h3></div><div class="setting-actions"><button class="secondary-button" data-clear-cache>清理缓存</button><button type="button" class="secondary-button application-reset-button" data-reset-application>重置</button></div></section>
+      <h2 class="settings-section-label">关于</h2>
       <section class="settings-card"><div><h3>关于</h3><p>MenoRadio <span data-app-version>${escapeHtml(version)}</span> · 开发者 <button type="button" class="settings-link" data-external="https://github.com/ichiris">@ichiris</button></p></div><div class="setting-actions"><button class="secondary-button" data-external="https://github.com/ichiris/MenoRadio">项目主页 ${icon('external')}</button><button class="secondary-button" data-route-link="settings-licenses">开源许可</button><button class="secondary-button" data-check-update>检查更新</button></div></section>
     </div>
   </div>`
