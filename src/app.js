@@ -244,6 +244,7 @@ const state = {
   showTranslation: true,
   playMode: localStorage.getItem('menoradio.playMode') || 'repeat-all',
   lyricScale: localStorage.getItem('menoradio.lyricScale') || 'auto',
+  theme: localStorage.getItem('menoradio.theme') || 'dark',
   fontFamily: localStorage.getItem('menoradio.fontFamily') || 'system',
   systemFonts: [],
   fontsLoaded: false,
@@ -252,6 +253,7 @@ const state = {
   audioQuality: localStorage.getItem('menoradio.audioQuality') || 'best',
   audioNormalization: localStorage.getItem('menoradio.audioNormalization') === 'true',
   mediaLoadingOptimization: localStorage.getItem('menoradio.mediaLoadingOptimization') !== 'false',
+  quickQueueReveal: localStorage.getItem('menoradio.quickQueueReveal') !== 'false',
   userVolume: .75,
   trackReplayGainDb: 0,
   floatingLyrics: {
@@ -418,6 +420,22 @@ const audioQualities = [
   ['jymaster', '超清母带'],
 ]
 
+const themes = [
+  ['dark', '深色（默认）'],
+  ['light', '浅色'],
+  ['catppuccin-latte', 'Catppuccin Latte'],
+  ['catppuccin-frappe', 'Catppuccin Frappé'],
+  ['catppuccin-macchiato', 'Catppuccin Macchiato'],
+  ['catppuccin-mocha', 'Catppuccin Mocha'],
+]
+
+function applyTheme() {
+  if (!themes.some(([value]) => value === state.theme)) state.theme = 'dark'
+  document.documentElement.dataset.theme = state.theme
+}
+
+applyTheme()
+
 function applyDisplaySettings() {
   const legacyName = legacyFontNames[String(state.fontFamily || '').toLowerCase()]
   if (legacyName) {
@@ -431,6 +449,7 @@ function applyDisplaySettings() {
     localStorage.setItem('menoradio.audioQuality', state.audioQuality)
   }
   if (!audioQualities.some(([value]) => value === state.audioQuality)) state.audioQuality = 'best'
+  applyTheme()
   document.documentElement.style.setProperty('--font', fontCss(state.fontFamily))
   dom.immersive.dataset.lyricScale = state.lyricScale
   $$('[data-lyric-scale-value]').forEach((button) => {
@@ -1593,10 +1612,11 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.14.13-preview'
+  const version = '0.14.14-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
+      <section class="settings-card theme-setting-card"><div><h3>主题</h3></div>${choicePickerMarkup('theme', state.theme, themes, '主题')}</section>
       <section class="settings-card font-setting-card"><div><h3>字体</h3></div><div class="font-picker-control">
         <button type="button" class="setting-picker" data-font-picker aria-expanded="false"><span style="font-family:${attr(fontCss(state.fontFamily))}">${escapeHtml(fontLabel(state.fontFamily))}</span><svg><use href="#i-chevron"/></svg></button>
         <div class="font-picker-popover" data-font-popover aria-hidden="true">
@@ -1607,6 +1627,7 @@ function renderSettings() {
       <section class="settings-card quality-setting-card"><div><h3>音质</h3></div>${choicePickerMarkup('audio-quality', state.audioQuality, audioQualities, '音质')}</section>
       <section class="settings-card"><div><h3>音量均衡</h3></div><label class="setting-switch" title="按歌曲的 ReplayGain 固定调整播放增益"><input type="checkbox" data-audio-normalization ${state.audioNormalization ? 'checked' : ''}><i></i></label></section>
       <section class="settings-card"><div><h3>媒体加载优化</h3></div><label class="setting-switch"><input type="checkbox" data-media-loading-optimization ${state.mediaLoadingOptimization ? 'checked' : ''}><i></i></label></section>
+      <section class="settings-card"><div><h3>快捷呼出播放队列</h3></div><label class="setting-switch" title="鼠标贴近窗口右侧时呼出播放队列"><input type="checkbox" data-quick-queue-reveal ${state.quickQueueReveal ? 'checked' : ''}><i></i></label></section>
       <button type="button" class="settings-card settings-navigation-card" data-route-link="settings-floating"><h3>悬浮歌词</h3><svg><use href="#i-chevron"/></svg></button>
       <section class="settings-card data-management-card"><div><h3>数据管理</h3></div><div class="setting-actions"><button class="secondary-button" data-clear-cache>清理缓存</button><button type="button" class="secondary-button application-reset-button" data-reset-application>重置</button></div></section>
       <section class="settings-card"><div><h3>关于</h3><p>MenoRadio <span data-app-version>${escapeHtml(version)}</span> · 开发者 <button type="button" class="settings-link" data-external="https://github.com/ichiris">@ichiris</button></p></div><div class="setting-actions"><button class="secondary-button" data-external="https://github.com/ichiris/MenoRadio">项目主页 ${icon('external')}</button><button class="secondary-button" data-route-link="settings-licenses">开源许可</button><button class="secondary-button" data-check-update>检查更新</button></div></section>
@@ -5150,6 +5171,14 @@ function bindEvents() {
       }
       return
     }
+    if (event.target.matches('[data-quick-queue-reveal]')) {
+      state.quickQueueReveal = event.target.checked
+      localStorage.setItem('menoradio.quickQueueReveal', String(state.quickQueueReveal))
+      if (!state.quickQueueReveal && state.queueAutoOpenedByPointer && dom.queueDrawer.classList.contains('open')) {
+        toggleQueue(false, { source: 'pointer', focusCurrent: false })
+      }
+      return
+    }
     if (event.target.matches('[data-playlist-search]')) {
       refreshCurrentPlaylistTrackList()
     }
@@ -5488,7 +5517,7 @@ function bindEvents() {
       return
     }
     const drawerOpen = dom.queueDrawer.classList.contains('open')
-    if (!drawerOpen && event.clientX >= window.innerWidth - 10) {
+    if (state.quickQueueReveal && !drawerOpen && event.clientX >= window.innerWidth - 10) {
       toggleQueue(true, { source: 'pointer', focusCurrent: true })
       return
     }
@@ -5894,6 +5923,12 @@ function onPageClick(event) {
       if (state.audioQuality !== value) clearAudioPreloads()
       state.audioQuality = value
       localStorage.setItem('menoradio.audioQuality', value)
+      updateChoicePicker(control, value)
+    }
+    if (name === 'theme' && themes.some(([optionValue]) => optionValue === value)) {
+      state.theme = value
+      localStorage.setItem('menoradio.theme', value)
+      applyTheme()
       updateChoicePicker(control, value)
     }
     if (name === 'floating-lyrics-mode' && floatingLyricModes.some(([optionValue]) => optionValue === value)) {
