@@ -919,11 +919,16 @@ function hydrateExpandableDescriptions(container = dom.page) {
 function renderCards(playlists) {
   return `<div class="card-grid">${playlists.map((playlistInput) => {
     const playlist = playlistInput.cover ? playlistInput : normalizePlaylist(playlistInput)
-    return `<button class="music-card" data-playlist-id="${attr(playlist.id)}">
-      <span class="card-cover-wrap"><img class="card-cover" ${thumbnailAttributes(playlist.cover, thumbnailPixelSize(220, 384))} alt=""><span class="card-play">${icon('play')}</span></span>
-      <span class="card-title">${escapeHtml(playlist.name)}</span>
-      <span class="card-subtitle">${playlist.creator ? escapeHtml(playlist.creator) : `${formatCount(playlist.playCount)} 次播放`}</span>
-    </button>`
+    return `<div class="music-card">
+      <span class="card-cover-wrap">
+        <button type="button" class="card-cover-button" data-playlist-id="${attr(playlist.id)}" aria-label="打开 ${attr(playlist.name)}"><img class="card-cover" ${thumbnailAttributes(playlist.cover, thumbnailPixelSize(220, 384))} alt=""></button>
+        <button type="button" class="card-play" data-playlist-play="${attr(playlist.id)}" aria-label="播放 ${attr(playlist.name)}">${icon('play')}</button>
+      </span>
+      <button type="button" class="card-copy" data-playlist-id="${attr(playlist.id)}">
+        <span class="card-title">${escapeHtml(playlist.name)}</span>
+        <span class="card-subtitle">${playlist.creator ? escapeHtml(playlist.creator) : `${formatCount(playlist.playCount)} 次播放`}</span>
+      </button>
+    </div>`
   }).join('')}</div>`
 }
 
@@ -1612,7 +1617,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.14.14-preview'
+  const version = '0.15.0-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <h2 class="settings-section-label">账户</h2>
@@ -2213,6 +2218,25 @@ function playAllTracks(tracks) {
   if (!source.length) return
   const index = state.playMode === 'shuffle' ? Math.floor(Math.random() * source.length) : 0
   return playTracks(source, index, { keepSelectedFirst: state.playMode === 'shuffle' })
+}
+
+async function playPlaylistFromCard(button) {
+  const id = String(button?.dataset.playlistPlay || '')
+  if (!id || button.dataset.loading === 'true') return
+  button.dataset.loading = 'true'
+  button.setAttribute('aria-busy', 'true')
+  try {
+    const { tracks } = await fetchPlaylist(id)
+    if (!tracks.length) return toast('暂无歌曲')
+    await playAllTracks(tracks)
+  } catch (error) {
+    toast(error.message || '歌单播放失败', '播放失败', 'error')
+  } finally {
+    if (button.isConnected) {
+      delete button.dataset.loading
+      button.removeAttribute('aria-busy')
+    }
+  }
 }
 
 function isSupersededPlaybackError(error) {
@@ -5877,6 +5901,8 @@ function onPageClick(event) {
     const playlist = state.userPlaylists.find((entry) => String(entry.id) === String(playlistMenu.dataset.playlistMenuId))
     return showPlaylistMenu(playlistMenu, playlist)
   }
+  const playlistPlay = event.target.closest('[data-playlist-play]')
+  if (playlistPlay) return playPlaylistFromCard(playlistPlay)
   const playlist = event.target.closest('[data-playlist-id]')
   if (playlist) return navigate('playlist', { id: playlist.dataset.playlistId })
   const fontPicker = event.target.closest('[data-font-picker]')

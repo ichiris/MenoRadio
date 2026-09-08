@@ -309,7 +309,7 @@ kbd { border: 1px solid var(--line); background: rgba(0,0,0,.16); color: var(--t
 .hero-turntable::before, .hero-turntable::after { content: ""; position: absolute; left: 176px; top: 105px; width: 286px; height: 286px; border: 1px solid rgba(137,222,216,.09); border-radius: 50%; transform: translate(-50%,-50%); }
 .hero-turntable::after { width: 236px; height: 236px; border-color: rgba(137,222,216,.065); }
 .hero-vinyl { position: absolute; right: 42px; top: 13px; width: 184px; height: 184px; overflow: hidden; border-radius: 50%; background: repeating-radial-gradient(circle, transparent 0 5px, rgba(184,229,228,.038) 5.7px 6.3px), radial-gradient(circle, transparent 0 58%, rgba(65,126,131,.12) 72%, rgba(7,12,15,.42) 100%), #11191d; box-shadow: 0 24px 48px rgba(0,0,0,.42), inset 0 0 0 1px rgba(255,255,255,.08); transform: rotate(-8deg); }
-.hero-vinyl::before { content: ""; position: absolute; z-index: 2; inset: 38%; border-radius: 50%; background: radial-gradient(circle, #d3eeee 0 9%, #428f92 10% 52%, #2b6c70 53% 100%); box-shadow: 0 0 0 1px rgba(255,255,255,.08); }
+.hero-vinyl::before { content: ""; position: absolute; z-index: 2; inset: 38%; border-radius: 50%; background: radial-gradient(circle, #d3eeee 0 9%, var(--accent) 10% 52%, color-mix(in srgb, var(--accent) 70%, #16272a) 53% 100%); box-shadow: 0 0 0 1px rgba(255,255,255,.08); }
 .hero-vinyl::after { content: ""; position: absolute; z-index: 1; inset: 0; border-radius: inherit; background: linear-gradient(112deg, transparent 12%, rgba(79,157,162,.035) 24%, rgba(151,221,221,.19) 39%, rgba(75,151,156,.075) 50%, transparent 66%), linear-gradient(292deg, transparent 23%, rgba(105,194,197,.06) 39%, transparent 55%); mix-blend-mode: screen; }
 .hero-vinyl i { position: absolute; z-index: 3; inset: 7%; border-radius: 50%; border: 1px solid rgba(141,219,216,.065); }
 .hero-tonearm { position: absolute; z-index: 4; right: 1px; top: 0; width: 128px; height: 188px; overflow: visible; opacity: .78; filter: drop-shadow(1px 3px 3px rgba(0,0,0,.24)); }
@@ -329,14 +329,17 @@ kbd { border: 1px solid var(--line); background: rgba(0,0,0,.16); color: var(--t
 .secondary-button { background: var(--control-bg); border-color: var(--line); }.secondary-button:hover { background: var(--control-hover); }
 
 .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 19px 16px; }
-.music-card { border: 0; background: transparent; text-align: left; padding: 0; min-width: 0; }
+.music-card { position: relative; min-width: 0; }
 .card-cover-wrap { display: block; position: relative; width: 100%; aspect-ratio: 1; border-radius: 9px; overflow: hidden; background: var(--cover-placeholder); box-shadow: 0 8px 24px rgba(0,0,0,.16); }
+.card-cover-button { width: 100%; height: 100%; padding: 0; border: 0; background: transparent; display: block; cursor: pointer; }
 .card-cover { width: 100%; height: 100%; object-fit: cover; transition: transform .28s ease, filter .28s ease; }
 img[data-thumbnail-state="loading"] { opacity: 0; border-color: transparent !important; }
 img[data-thumbnail-state="ready"] { opacity: 1; }
-.card-play { position: absolute; right: 10px; bottom: 10px; width: 38px; height: 38px; border: 0; border-radius: 50%; background: rgba(245,248,248,.93); color: #233234; display: grid; place-items: center; transform: translateY(9px); opacity: 0; transition: .2s ease; box-shadow: 0 6px 18px rgba(0,0,0,.3); }
+.card-play { position: absolute; right: 10px; bottom: 10px; width: 38px; height: 38px; border: 0; border-radius: 50%; background: rgba(245,248,248,.93); color: #233234; display: grid; place-items: center; transform: translateY(9px); opacity: 0; transition: .2s ease; box-shadow: 0 6px 18px rgba(0,0,0,.3); cursor: pointer; }
+.music-card:hover .card-play[aria-busy="true"] { opacity: .68; cursor: progress; }
 .card-play svg { width: 19px; height: 19px; margin-left: 2px; }
 .music-card:hover .card-cover { transform: scale(1.025); filter: brightness(.8); }.music-card:hover .card-play { transform: translateY(0); opacity: 1; }
+.card-copy { width: 100%; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; display: block; cursor: pointer; }
 .card-title { display: block; margin-top: 10px; color: var(--text); font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-subtitle { display: block; margin-top: 3px; color: var(--text-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
