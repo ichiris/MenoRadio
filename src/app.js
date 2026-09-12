@@ -251,7 +251,7 @@ const state = {
   fontsLoading: false,
   fontSearchTimer: 0,
   audioQuality: localStorage.getItem('menoradio.audioQuality') || 'best',
-  audioNormalization: localStorage.getItem('menoradio.audioNormalization') === 'true',
+  audioNormalization: localStorage.getItem('menoradio.audioNormalization') !== 'false',
   mediaLoadingOptimization: localStorage.getItem('menoradio.mediaLoadingOptimization') !== 'false',
   quickQueueReveal: localStorage.getItem('menoradio.quickQueueReveal') !== 'false',
   userVolume: .75,
@@ -1623,7 +1623,7 @@ function renderSettings() {
       <h2 class="settings-section-label">账户</h2>
       <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
       <h2 class="settings-section-label">外观</h2>
-      <section class="settings-card theme-setting-card"><div><h3>主题</h3></div>${choicePickerMarkup('theme', state.theme, themes, '主题')}</section>
+      <section class="settings-card theme-setting-card"><div><h3>配色方案</h3></div>${choicePickerMarkup('theme', state.theme, themes, '配色方案')}</section>
       <section class="settings-card font-setting-card"><div><h3>字体</h3></div><div class="font-picker-control">
         <button type="button" class="setting-picker" data-font-picker aria-expanded="false"><span style="font-family:${attr(fontCss(state.fontFamily))}">${escapeHtml(fontLabel(state.fontFamily))}</span><svg><use href="#i-chevron"/></svg></button>
         <div class="font-picker-popover" data-font-popover aria-hidden="true">
@@ -4186,15 +4186,15 @@ function scheduleImmersiveLyricLayoutSettle(delay = 0) {
       && (animation.playState === 'running' || animation.playState === 'pending')
     )))
     // A delayed layout correction must not cut across a natural lyric move.
-    // Let the existing convoy animation finish, then perform the pixel-perfect
-    // alignment. This keeps resize/full-screen work independent from lyric
-    // emphasis and explicit-break timing.
+    // Let the existing convoy animation finish, then reuse the same animated
+    // scroll path as seeking. Resize/full-screen alignment must not touch lyric
+    // emphasis or explicit-break timing.
     if (lyricScrollRunning) {
       state.immersiveLayoutSettleTimer = window.setTimeout(settle, 80)
       return
     }
     state.immersiveLayoutSettleTimer = 0
-    updateActiveLyric(playbackClockTime(), true, true)
+    updateLyricScrollFocus(state.focusLyric, state.activeLyric, state.activeLyric, false, true)
   }
   state.immersiveLayoutSettleTimer = window.setTimeout(settle, Math.max(0, delay))
 }
