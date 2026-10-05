@@ -137,6 +137,7 @@
   <section id="immersivePlayer" class="immersive-player paused" aria-hidden="true" data-lyric-scale="auto">
     <div id="immersiveBackdrop" class="immersive-backdrop active"></div>
     <div id="immersiveBackdropNext" class="immersive-backdrop"></div>
+    <div class="immersive-grain" aria-hidden="true"></div>
     <header class="immersive-header">
       <button id="closeImmersive" class="immersive-dismiss" aria-label="返回播放列表"><svg><use href="#i-chevron"/></svg></button>
       <div class="immersive-window-controls" aria-label="窗口控制">
@@ -147,7 +148,10 @@
     </header>
     <div class="immersive-content">
       <section class="album-panel">
-        <img id="immersiveCover" class="immersive-cover" alt="专辑封面" draggable="false">
+        <div class="cover-stage">
+          <div class="cover-glow" aria-hidden="true"></div>
+          <img id="immersiveCover" class="immersive-cover" alt="专辑封面" draggable="false">
+        </div>
         <div class="immersive-meta"><div><h1 id="immersiveTitle">MenoRadio</h1><p id="immersiveArtist">静候第一首歌</p></div><button id="immersiveLike" class="glass-button"><svg><use href="#i-heart"/></svg></button></div>
         <input id="immersiveProgress" class="immersive-progress" type="range" min="0" max="1000" value="0" aria-label="播放进度">
         <div class="immersive-times"><span id="immersiveCurrent">0:00</span><span id="immersiveDuration">0:00</span></div>

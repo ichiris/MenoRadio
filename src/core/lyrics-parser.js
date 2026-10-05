@@ -34,14 +34,40 @@
     return parseLrcDocument(text).lines
   }
 
+  function compactLyricText(text) {
+    return String(text || '').replace(/\s+/g, '')
+  }
+
+  // Word stamps look like "(start,duration,0)text". The text of a word runs
+  // until the next stamp and keeps its spacing so Latin lyrics stay readable.
+  function parseYrcWords(body, content) {
+    const stamps = [...body.matchAll(/\((\d+),(\d+),\d+\)/g)]
+    const words = []
+    stamps.forEach((stamp, index) => {
+      const start = stamp.index + stamp[0].length
+      const end = index + 1 < stamps.length ? stamps[index + 1].index : body.length
+      const text = body.slice(start, end)
+      if (!text.trim()) return
+      words.push({ time: Number(stamp[1]) / 1000, duration: Number(stamp[2]) / 1000, text })
+    })
+    if (words.length < 2) return []
+    words[0].text = words[0].text.trimStart()
+    words[words.length - 1].text = words[words.length - 1].text.trimEnd()
+    return compactLyricText(words.map((word) => word.text).join('')) === compactLyricText(content) ? words : []
+  }
+
   function parseYrc(text) {
     const lines = []
     for (const raw of String(text || '').split(/\r?\n/)) {
       const stamp = raw.match(/^\[(\d+),(\d+)\]/)
       if (!stamp) continue
-      const content = raw.replace(/^\[\d+,\d+\]/, '').replace(/\(\d+,\d+,\d+\)/g, '').trim()
+      const body = raw.replace(/^\[\d+,\d+\]/, '')
+      const content = body.replace(/\(\d+,\d+,\d+\)/g, '').trim()
       if (!content || isLyricMetadataLine(content)) continue
-      lines.push({ time: Number(stamp[1]) / 1000, duration: Number(stamp[2]) / 1000, text: content })
+      const line = { time: Number(stamp[1]) / 1000, duration: Number(stamp[2]) / 1000, text: content }
+      const words = parseYrcWords(body, content)
+      if (words.length) line.words = words
+      lines.push(line)
     }
     return lines.sort((a, b) => a.time - b.time)
   }
@@ -51,7 +77,11 @@
     if (!timed.length) return original
     return original.map((line) => {
       const match = timed.find((candidate) => Math.abs(candidate.time - line.time) < .28)
-      return match ? { ...line, duration: match.duration } : line
+      if (!match) return line
+      // Word timing is only trusted when both sources carry the same text;
+      // otherwise the line keeps its plain rendering.
+      const sameText = match.words?.length && compactLyricText(match.text) === compactLyricText(line.text)
+      return sameText ? { ...line, duration: match.duration, words: match.words } : { ...line, duration: match.duration }
     })
   }
 

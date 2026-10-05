@@ -63,6 +63,20 @@ test('lyrics parsers discard production credits without turning them into instru
   ])
 })
 
+test('word-timed lyrics keep per-word timing when the words rebuild the line', () => {
+  const [line] = core.parseYrc('[1000,2000](1000,600,0)Hold (1600,500,0)on (2100,900,0)tight')
+  assert.equal(line.text, 'Hold on tight')
+  assert.deepEqual(line.words, [
+    { time: 1, duration: .6, text: 'Hold ' },
+    { time: 1.6, duration: .5, text: 'on ' },
+    { time: 2.1, duration: .9, text: 'tight' },
+  ])
+  const matched = core.applyTimedDurations([{ time: 1, text: 'Hold on tight' }], [line])
+  assert.deepEqual(matched[0].words, line.words)
+  const mismatched = core.applyTimedDurations([{ time: 1, text: 'Something else' }], [line])
+  assert.deepEqual(mismatched, [{ time: 1, duration: 2, text: 'Something else' }])
+})
+
 test('timed and translated lyrics merge by timestamp without mutating text', () => {
   const original = [{ time: 1, text: 'line' }]
   const timed = [{ time: 1.1, duration: 2, text: 'timed' }]

@@ -306,6 +306,10 @@ const state = {
   manualLyricReadableTimer: 0,
   focusLyric: 0,
   lyricFocusRatio: .21,
+  lyricWordFrame: 0,
+  lyricWordLine: null,
+  lyricWords: [],
+  coverRevealListener: null,
   backdropGeneration: 0,
   backdropUrl: '',
   backdropLayer: 0,
@@ -2761,10 +2765,16 @@ function updateNowPlaying(options = {}) {
   dom.nowTitle.textContent = track.name
   dom.nowArtist.textContent = track.artist
   const immersiveCover = $('#immersiveCover')
+  const trackKey = String(track.id)
+  const trackChanged = dom.immersive.dataset.trackKey !== trackKey
+  const firstTrack = !dom.immersive.dataset.trackKey
+  dom.immersive.dataset.trackKey = trackKey
   immersiveCover.crossOrigin = 'anonymous'
   immersiveCover.src = cover
   $('#immersiveTitle').textContent = track.name
+  $('#immersiveTitle').title = track.name
   $('#immersiveArtist').textContent = track.artist
+  if (trackChanged && !firstTrack) animateImmersiveTrackChange(immersiveCover)
   if (!passive) updateImmersiveBackdrop(cover)
   const liked = state.liked.has(track.id)
   $('#likeButton').classList.toggle('active', liked)
@@ -2792,8 +2802,37 @@ function updateLikeButtonsOnly() {
   for (const button of [$('#likeButton'), $('#immersiveLike')]) {
     if (!button) continue
     button.classList.toggle('active', liked)
-    button.setAttribute('aria-label', liked ? '浠庢垜鍠滄鐨勯煶涔愮Щ闄?' : '娣诲姞鍒版垜鍠滄鐨勯煶涔?')
+    button.setAttribute('aria-label', liked ? '从我喜欢的音乐移除' : '添加到我喜欢的音乐')
   }
+}
+
+function animateImmersiveTrackChange(coverImage) {
+  if (!dom.immersive.classList.contains('open') || matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  const easing = 'cubic-bezier(.16,1,.3,1)'
+  const meta = $('.immersive-meta > div', dom.immersive)
+  meta?.animate([
+    { opacity: 0, transform: 'translateY(10px)', filter: 'blur(6px)' },
+    { opacity: 1, transform: 'none', filter: 'blur(0)' },
+  ], { duration: 560, delay: 60, easing, fill: 'backwards' })
+  // Reveal the new artwork once it has decoded, so the old cover is never
+  // the one being animated in.
+  const stage = $('.cover-stage', dom.immersive)
+  if (!stage) return
+  if (state.coverRevealListener) coverImage.removeEventListener('load', state.coverRevealListener)
+  state.coverRevealListener = null
+  const animateStage = () => {
+    state.coverRevealListener = null
+    stage.animate([
+      { opacity: .2, transform: 'scale(.9)', filter: 'blur(12px) saturate(1.3)' },
+      { opacity: 1, transform: 'none', filter: 'blur(0) saturate(1)' },
+    ], { duration: 760, easing })
+  }
+  if (coverImage.complete && coverImage.naturalWidth > 0 && coverImage.currentSrc === coverImage.src) {
+    animateStage()
+    return
+  }
+  state.coverRevealListener = animateStage
+  coverImage.addEventListener('load', animateStage, { once: true })
 }
 
 function updateImmersiveBackdrop(url, decodedImage = null) {
@@ -2803,14 +2842,22 @@ function updateImmersiveBackdrop(url, decodedImage = null) {
   const image = new Image()
   image.crossOrigin = 'anonymous'
   image.referrerPolicy = 'no-referrer'
-  const reveal = (source) => {
+  const reveal = (source, luminance = Number.NaN) => {
     if (generation !== state.backdropGeneration) return
     const layers = [$('#immersiveBackdrop'), $('#immersiveBackdropNext')]
     const nextIndex = state.backdropLayer === 0 ? 1 : 0
     const current = layers[state.backdropLayer]
     const next = layers[nextIndex]
     if (!next) return
-    next.style.setProperty('--cover', `url("${String(source).replace(/["\\]/g, '')}")`)
+    const processed = Number.isFinite(luminance)
+    const coverValue = `url("${String(source).replace(/["\\]/g, '')}")`
+    next.style.setProperty('--cover', coverValue)
+    // An unprocessed (cross-origin) cover still needs the CSS blur fallback.
+    next.classList.toggle('raw', !processed)
+    // Bright artwork receives a deeper veil so white lyrics keep contrast.
+    const veil = processed ? Math.max(.14, Math.min(.42, .2 + (luminance - .42) * .62)) : .26
+    dom.immersive.style.setProperty('--backdrop-veil', veil.toFixed(3))
+    dom.immersive.style.setProperty('--cover-ambient', coverValue)
     next.classList.add('active')
     current?.classList.remove('active')
     state.backdropLayer = nextIndex
@@ -2867,7 +2914,16 @@ function updateImmersiveBackdrop(url, decodedImage = null) {
         }
         context.putImageData(pixels, 0, 0)
       }
-      reveal(canvas.toDataURL('image/jpeg', .9))
+      // Pre-blur the tiny sample once. The animated backdrop layers then only
+      // move an already-soft texture instead of running a huge CSS blur.
+      const soft = document.createElement('canvas')
+      soft.width = 96
+      soft.height = 96
+      const softContext = soft.getContext('2d')
+      softContext.imageSmoothingQuality = 'high'
+      softContext.filter = 'blur(6px) saturate(1.16)'
+      softContext.drawImage(canvas, -14, -14, 124, 124)
+      reveal(soft.toDataURL('image/jpeg', .9), averageLuminance)
     } catch {
       reveal(url)
     }
@@ -3142,6 +3198,7 @@ function renderLyrics(lines, status = 'ready') {
   state.manualLyricReadable = false
   clearTimeout(state.manualLyricReadableTimer)
   $$('.lyric-line', dom.lyricsScroller).forEach((line) => line.getAnimations().forEach((animation) => animation.cancel()))
+  resetLyricWords()
   if (!lines.length) {
     dom.lyricsScroller.innerHTML = status === 'loading'
       ? `<div class="lyric-loading" role="status" aria-label="正在加载歌词"><span class="lyric-loading-spinner" aria-hidden="true"></span></div>`
@@ -3149,7 +3206,13 @@ function renderLyrics(lines, status = 'ready') {
     syncFloatingLyrics(true)
     return
   }
-  dom.lyricsScroller.innerHTML = lines.map((line, index) => `<div class="lyric-line" data-lyric-index="${index}" data-time="${line.time}"><div class="lyric-content"><div class="lyric-original">${escapeHtml(line.text)}</div>${line.translation ? `<div class="lyric-translation translation">${escapeHtml(line.translation)}</div>` : ''}</div></div>`).join('')
+  dom.lyricsScroller.innerHTML = lines.map((line, index) => {
+    const words = Array.isArray(line.words) && line.words.length ? line.words : null
+    const original = words
+      ? words.map((word) => `<span class="lyric-word" data-start="${Number(word.time)}" data-end="${Number(word.time) + Number(word.duration || 0)}">${escapeHtml(word.text)}</span>`).join('')
+      : escapeHtml(line.text)
+    return `<div class="lyric-line${words ? ' has-words' : ''}" data-lyric-index="${index}" data-time="${line.time}"><div class="lyric-content"><div class="lyric-original">${original}</div>${line.translation ? `<div class="lyric-translation translation">${escapeHtml(line.translation)}</div>` : ''}</div></div>`
+  }).join('')
   updateLyricVisibility()
   requestAnimationFrame(() => {
     updateActiveLyric(playbackClockTime(), true, true)
@@ -3243,6 +3306,7 @@ function startLyricsClock() {
   stopLyricsClock()
   const current = syncLyricsToPlaybackClock(true)
   scheduleLyricsClock(current)
+  syncLyricWords()
 }
 
 function lyricOpacity(lineIndex, activeIndex, focusIndex = state.focusLyric) {
@@ -3253,11 +3317,20 @@ function lyricOpacity(lineIndex, activeIndex, focusIndex = state.focusLyric) {
   return Math.max(.075, .34 * Math.pow(.67, Math.max(0, distance - 1)))
 }
 
+// Depth of field: lines further from the focus soften slightly so the sung
+// line stays the clear subject. Manual reading removes the effect entirely.
+function lyricBlur(lineIndex, activeIndex, focusIndex = state.focusLyric) {
+  if (lineIndex === activeIndex || state.manualLyricReadable) return 0
+  const distance = Math.abs(lineIndex - focusIndex)
+  return distance === 0 ? 0 : Math.min(2.6, .4 + distance * .45)
+}
+
 function animateLyricOpacity(line, lineIndex, previousActive, previousFocus, nextActive, nextFocus, immediate, durationOverride = 0) {
   const current = Number.parseFloat(getComputedStyle(line).opacity) || lyricOpacity(lineIndex, previousActive, previousFocus)
   line.getAnimations().filter((animation) => animation.id?.startsWith('lyric-opacity-')).forEach((animation) => animation.cancel())
   const target = lyricOpacity(lineIndex, nextActive, nextFocus)
   line.style.setProperty('--lyric-opacity', target.toFixed(3))
+  line.style.setProperty('--lyric-blur', `${lyricBlur(lineIndex, nextActive, nextFocus).toFixed(2)}px`)
   if (immediate || Math.abs(current - target) < .006 || matchMedia('(prefers-reduced-motion: reduce)').matches) return
   const incoming = lineIndex === nextActive
   const outgoing = lineIndex === previousActive
@@ -3370,6 +3443,57 @@ function updateLyricEmphasis(nextActive, nextFocus, immediate = false, force = f
     if (previousActive >= 0 && previousActive !== nextActive) animateLyricScale(lines[previousActive], 1, immediate)
     if (nextActive >= 0) animateLyricScale(lines[nextActive], 1.038, immediate)
   }
+  syncLyricWords()
+}
+
+function resetLyricWords() {
+  cancelAnimationFrame(state.lyricWordFrame)
+  state.lyricWordFrame = 0
+  for (const word of state.lyricWords) {
+    word.element.style.removeProperty('--word-progress')
+    word.element.classList.remove('sung')
+  }
+  state.lyricWordLine = null
+  state.lyricWords = []
+}
+
+// Word-timed (YRC) lyrics fill word by word. The loop reads the playback
+// clock every frame while the player is visible and playing, so seeking,
+// pausing and rate changes never need their own bookkeeping.
+function syncLyricWords() {
+  const index = state.activeLyric
+  const line = index >= 0 ? $(`.lyric-line[data-lyric-index="${index}"]`, dom.lyricsScroller) : null
+  if (line !== state.lyricWordLine) {
+    resetLyricWords()
+    if (!line?.classList.contains('has-words')) return
+    state.lyricWordLine = line
+    state.lyricWords = $$('.lyric-word', line).map((element) => ({
+      element,
+      start: Number(element.dataset.start) || 0,
+      end: Number(element.dataset.end) || 0,
+      progress: -1,
+    }))
+  }
+  if (!state.lyricWordLine) return
+  cancelAnimationFrame(state.lyricWordFrame)
+  state.lyricWordFrame = 0
+  const tick = () => {
+    state.lyricWordFrame = 0
+    if (state.lyricWordLine !== line) return
+    const time = playbackClockTime()
+    for (const word of state.lyricWords) {
+      const span = Math.max(.001, word.end - word.start)
+      const progress = Math.round(Math.max(0, Math.min(1, (time - word.start) / span)) * 1000) / 1000
+      if (progress === word.progress) continue
+      word.progress = progress
+      word.element.style.setProperty('--word-progress', String(progress))
+      word.element.classList.toggle('sung', progress > 0)
+    }
+    if (!dom.audio.paused && dom.immersive.classList.contains('open')) {
+      state.lyricWordFrame = requestAnimationFrame(tick)
+    }
+  }
+  tick()
 }
 
 function updateLyricScrollFocus(nextFocus, previousActive, nextActive, immediate = false, force = false) {
@@ -4295,6 +4419,7 @@ function openImmersive(open = true) {
     const generation = state.audioLoadGeneration
     if (state.coverReadyGeneration !== generation) updateNowPlaying()
     if (!state.lyricsLoading && state.lyricsReadyGeneration !== generation) void fetchLyrics(state.current, generation)
+    syncLyricWords()
     showImmersiveChrome()
     state.immersiveAppSuspendTimer = window.setTimeout(() => {
       if (dom.immersive.classList.contains('open')) document.body.classList.add('immersive-app-suspended')
@@ -4998,6 +5123,7 @@ function bindEvents() {
     reportPlaybackBuffer(true)
     if (completedPendingSeek) updateActiveLyric(dom.audio.currentTime || 0, false, true)
     if (state.playbackIntentPlaying && !dom.audio.paused) startLyricsClock()
+    else syncLyricWords()
   })
   dom.audio.addEventListener('progress', () => reportPlaybackBuffer())
   dom.audio.addEventListener('loadedmetadata', () => {
