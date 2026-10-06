@@ -77,6 +77,16 @@ test('word-timed lyrics keep per-word timing when the words rebuild the line', (
   assert.deepEqual(mismatched, [{ time: 1, duration: 2, text: 'Something else' }])
 })
 
+test('word timing survives LRC/YRC drift and full-width punctuation differences', () => {
+  const timed = core.parseYrc('[21150,800](21150,400,0)綺(21550,400,0)麗\n[97370,600](97370,300,0)（(97670,300,0)酔）')
+  const merged = core.applyTimedDurations([
+    { time: 20.59, text: '綺麗' },
+    { time: 90.9, text: '(酔)' },
+  ], timed)
+  assert.equal(merged[0].words?.length, 2)
+  assert.equal(merged[1].words?.length, 2)
+})
+
 test('timed and translated lyrics merge by timestamp without mutating text', () => {
   const original = [{ time: 1, text: 'line' }]
   const timed = [{ time: 1.1, duration: 2, text: 'timed' }]
@@ -85,4 +95,31 @@ test('timed and translated lyrics merge by timestamp without mutating text', () 
   assert.deepEqual(core.mergeLyrics(withDuration, [{ time: 1.04, text: '译文' }], []), [
     { time: 1, duration: 2, text: 'line', translation: '译文', romanization: '' },
   ])
+})
+
+test('YRC starts drive line timing while translations retain their LRC timestamps', () => {
+  const lrc = core.parseLrcDocument('[00:20.59]綺麗\n[00:23.19]次の句')
+  const yrc = core.parseYrc('[21150,2170](21150,180,0)綺(21330,1990,0)麗\n[23320,2620](23320,1000,0)次の(24320,1620,0)句')
+  const lines = core.applyTimedDurations(lrc.lines, yrc)
+  const merged = core.mergeLyrics(lines, [{ time: 20.59, text: '美丽' }, { time: 23.19, text: '下一句' }], [{ time: 20.59, text: 'kirei' }])
+  assert.deepEqual(merged.map((line) => line.time), [21.15, 23.32])
+  assert.equal(merged[0].translation, '美丽')
+  assert.equal(merged[0].romanization, 'kirei')
+  assert.equal(merged[1].translation, '下一句')
+  assert.equal(lrc.lines[0].time, 20.59)
+})
+
+test('blank LRC markers cannot interrupt YRC words, including a delayed YRC start', () => {
+  const lrc = core.parseLrcDocument('[00:01.00]前句\n[00:01.50]\n[00:12.00]后句')
+  const yrc = core.parseYrc('[2000,1000](2000,500,0)前(2500,2000,0)句\n[12000,2000](12000,1000,0)后(13000,1000,0)句')
+  const lines = core.applyTimedDurations(lrc.lines, yrc)
+  assert.deepEqual(core.alignLyricBreaks(lines, lrc.breaks), [4.5])
+})
+
+test('YRC end times infer instrumental gaps and discard markers that run into the next line', () => {
+  const lines = core.parseYrc('[1000,2000](1000,1000,0)前(2000,1000,0)句\n[9000,2000](9000,1000,0)后(10000,1000,0)句')
+  assert.deepEqual(core.alignLyricBreaks(lines, []), [3])
+  const continuous = core.parseYrc('[1000,2100](1000,1000,0)前(2000,1100,0)句\n[3000,2000](3000,1000,0)后(4000,1000,0)句')
+  assert.deepEqual(core.alignLyricBreaks(continuous, [2.9]), [])
+  assert.deepEqual(core.alignLyricBreaks([{ time: 1, text: '普通' }, { time: 8, text: '歌词' }], [3]), [3])
 })

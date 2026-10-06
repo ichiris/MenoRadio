@@ -15,7 +15,7 @@ API communication relies on the MIT-licensed repository
 Full third-party ownership and license information can be found in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
 
 ## AIGC Statement
-Codex was utilized during the development of MenoRadio.
+Codex and Claude code were utilized during the development of MenoRadio.
 
 ## Service and product names
 

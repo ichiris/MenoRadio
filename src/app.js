@@ -27,6 +27,7 @@ const {
   parseLrc,
   parseYrc,
   applyTimedDurations,
+  alignLyricBreaks,
   mergeLyrics,
 } = window.MenoRadioCore
 const $ = (selector, root = document) => root.querySelector(selector)
@@ -254,6 +255,9 @@ const state = {
   audioNormalization: localStorage.getItem('menoradio.audioNormalization') !== 'false',
   mediaLoadingOptimization: localStorage.getItem('menoradio.mediaLoadingOptimization') !== 'false',
   quickQueueReveal: localStorage.getItem('menoradio.quickQueueReveal') !== 'false',
+  legacyPlayer: localStorage.getItem('menoradio.legacyPlayer') === 'true',
+  wordHighlight: localStorage.getItem('menoradio.wordHighlight') !== 'false',
+  depthBlur: localStorage.getItem('menoradio.depthBlur') !== 'false',
   userVolume: .75,
   trackReplayGainDb: 0,
   floatingLyrics: {
@@ -309,6 +313,7 @@ const state = {
   lyricWordFrame: 0,
   lyricWordLine: null,
   lyricWords: [],
+  lyricWordOutgoing: [],
   coverRevealListener: null,
   backdropGeneration: 0,
   backdropUrl: '',
@@ -454,6 +459,7 @@ function applyDisplaySettings() {
   }
   if (!audioQualities.some(([value]) => value === state.audioQuality)) state.audioQuality = 'best'
   applyTheme()
+  applyPlayerStyleSettings()
   document.documentElement.style.setProperty('--font', fontCss(state.fontFamily))
   dom.immersive.dataset.lyricScale = state.lyricScale
   $$('[data-lyric-scale-value]').forEach((button) => {
@@ -461,6 +467,28 @@ function applyDisplaySettings() {
     button.classList.toggle('active', active)
     button.setAttribute('aria-selected', String(active))
   })
+}
+
+function applyPlayerStyleSettings() {
+  if (state.legacyPlayer) document.documentElement.dataset.playerStyle = 'legacy'
+  else delete document.documentElement.dataset.playerStyle
+  dom.immersive.classList.toggle('depth-blur-off', !state.depthBlur)
+}
+
+function wordHighlightEnabled() {
+  return state.wordHighlight && !state.legacyPlayer
+}
+
+// Player style changes take effect immediately: lyrics are rebuilt with or
+// without word spans, and the backdrop is regenerated for the active style.
+function refreshPlayerStyle({ lyrics = false, backdrop = false } = {}) {
+  applyPlayerStyleSettings()
+  if (lyrics && state.lyrics.length) renderLyrics(state.lyrics)
+  const cover = $('#immersiveCover')
+  if (backdrop && cover?.src) {
+    state.backdropUrl = ''
+    updateImmersiveBackdrop(cover.src, cover.complete ? cover : null)
+  }
 }
 
 function placeholderCover(label = 'M', seed = label) {
@@ -1621,7 +1649,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.15.0-preview'
+  const version = '0.16.0-preview'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <h2 class="settings-section-label">账户</h2>
@@ -1635,6 +1663,9 @@ function renderSettings() {
           <div class="font-picker-list" data-font-list>${fontOptionsMarkup()}</div>
         </div>
       </div></section>
+      <section class="settings-card"><div><h3>旧版播放页样式</h3></div><label class="setting-switch" title="使用 0.15 版本的播放页外观"><input type="checkbox" data-legacy-player ${state.legacyPlayer ? 'checked' : ''}><i></i></label></section>
+      <section class="settings-card" data-modern-player-setting ${state.legacyPlayer ? 'hidden' : ''}><div><h3>逐字高亮</h3></div><label class="setting-switch" title="支持逐字歌词的歌曲按演唱进度逐字点亮"><input type="checkbox" data-word-highlight ${state.wordHighlight ? 'checked' : ''}><i></i></label></section>
+      <section class="settings-card" data-modern-player-setting ${state.legacyPlayer ? 'hidden' : ''}><div><h3>景深模糊</h3></div><label class="setting-switch" title="远离当前句的歌词逐渐模糊"><input type="checkbox" data-depth-blur ${state.depthBlur ? 'checked' : ''}><i></i></label></section>
       <h2 class="settings-section-label">播放</h2>
       <section class="settings-card quality-setting-card"><div><h3>音质</h3></div>${choicePickerMarkup('audio-quality', state.audioQuality, audioQualities, '音质')}</section>
       <section class="settings-card"><div><h3>音量均衡</h3></div><label class="setting-switch" title="按歌曲的 ReplayGain 固定调整播放增益"><input type="checkbox" data-audio-normalization ${state.audioNormalization ? 'checked' : ''}><i></i></label></section>
@@ -2807,7 +2838,7 @@ function updateLikeButtonsOnly() {
 }
 
 function animateImmersiveTrackChange(coverImage) {
-  if (!dom.immersive.classList.contains('open') || matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  if (state.legacyPlayer || !dom.immersive.classList.contains('open') || matchMedia('(prefers-reduced-motion: reduce)').matches) return
   const easing = 'cubic-bezier(.16,1,.3,1)'
   const meta = $('.immersive-meta > div', dom.immersive)
   meta?.animate([
@@ -2913,6 +2944,10 @@ function updateImmersiveBackdrop(url, decodedImage = null) {
           values[index + 2] = Math.round((blue * (1 - mix) + targetBlue * mix) * coverDimming * 255)
         }
         context.putImageData(pixels, 0, 0)
+      }
+      if (state.legacyPlayer) {
+        reveal(canvas.toDataURL('image/jpeg', .9), averageLuminance)
+        return
       }
       // Pre-blur the tiny sample once. The animated backdrop layers then only
       // move an already-soft texture instead of running a huge CSS blur.
@@ -3168,7 +3203,7 @@ async function fetchLyrics(track, generation = state.audioLoadGeneration) {
         await new Promise((resolve) => window.setTimeout(resolve, 240))
         continue
       }
-      state.lyricBreaks = originalDocument.breaks
+      state.lyricBreaks = alignLyricBreaks(merged, originalDocument.breaks)
       state.lyrics = merged
       state.lyricsLoading = false
       state.lyricsReadyGeneration = generation
@@ -3207,7 +3242,7 @@ function renderLyrics(lines, status = 'ready') {
     return
   }
   dom.lyricsScroller.innerHTML = lines.map((line, index) => {
-    const words = Array.isArray(line.words) && line.words.length ? line.words : null
+    const words = wordHighlightEnabled() && Array.isArray(line.words) && line.words.length ? line.words : null
     const original = words
       ? words.map((word) => `<span class="lyric-word" data-start="${Number(word.time)}" data-end="${Number(word.time) + Number(word.duration || 0)}">${escapeHtml(word.text)}</span>`).join('')
       : escapeHtml(line.text)
@@ -3253,7 +3288,7 @@ function nextLyricsClockBoundary(time) {
   let boundary = Number.POSITIVE_INFINITY
   for (const line of state.lyrics) {
     const lineTime = Number(line.time)
-    const activation = Math.max(0, lineTime - lyricActivationToleranceSeconds)
+    const activation = lyricActivationTime(line)
     if (activation > time) {
       boundary = activation
       break
@@ -3379,10 +3414,17 @@ function animateLyricScale(line, target, immediate) {
   animation.addEventListener('finish', () => animation.cancel(), { once: true })
 }
 
-function lyricIndexAt(time) {
+// Word-timed lines activate on the YRC timestamp; even the usual 60ms lead
+// can cut off a short final syllable of the preceding line.
+function lyricActivationTime(line) {
+  return Math.max(0, line.time - (line.words?.length ? 0 : lyricActivationToleranceSeconds))
+}
+
+function lyricIndexAt(time, earlyActivation = false) {
   let indexAtTime = -1
   for (let index = 0; index < state.lyrics.length; index += 1) {
-    if (state.lyrics[index].time <= time) indexAtTime = index
+    const line = state.lyrics[index]
+    if ((earlyActivation ? lyricActivationTime(line) : line.time) <= time) indexAtTime = index
     else break
   }
   return indexAtTime
@@ -3407,7 +3449,7 @@ function resolveLyricEmphasis(time) {
       return time >= explicitBreak && time < next.time ? -1 : chronological
     }
   }
-  return lyricIndexAt(time + lyricActivationToleranceSeconds)
+  return lyricIndexAt(time, true)
 }
 
 function resolveLyricScrollFocus(time) {
@@ -3419,7 +3461,7 @@ function resolveLyricScrollFocus(time) {
       return chronological + 1
     }
   }
-  return Math.max(0, lyricIndexAt(time + lyricActivationToleranceSeconds))
+  return Math.max(0, lyricIndexAt(time, true))
 }
 
 function updateLyricEmphasis(nextActive, nextFocus, immediate = false, force = false) {
@@ -3446,52 +3488,114 @@ function updateLyricEmphasis(nextActive, nextFocus, immediate = false, force = f
   syncLyricWords()
 }
 
+// Visual alpha of a not-yet-sung word. It equals the opacity of the lines
+// next to the focus, so an unsung word looks the same before, during and
+// after its line becomes active.
+const lyricUnsungAlpha = .34
+
+// Reversing a lift starts at its visible position, including an unfinished
+// rise. A monotonic easing and a longer descent avoid a tiny snap/rebound.
+function animateLyricWordLift(element, lifted) {
+  if (element.classList.contains('sung') === lifted) return
+  const current = getComputedStyle(element).transform
+  element.getAnimations().filter((animation) => animation.id === 'lyric-word-lift').forEach((animation) => animation.cancel())
+  element.classList.toggle('sung', lifted)
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  const target = getComputedStyle(element).transform
+  const animation = element.animate([
+    { transform: current },
+    { transform: target },
+  ], { duration: lifted ? 600 : 950, easing: 'cubic-bezier(.25,.1,.25,1)', fill: 'both' })
+  animation.id = 'lyric-word-lift'
+  animation.addEventListener('finish', () => animation.cancel(), { once: true })
+}
+
+function updateLyricWordProgress(words, time, lift = true) {
+  for (const word of words) {
+    const span = Math.max(.001, word.end - word.start)
+    const progress = Math.round(Math.max(0, Math.min(1, (time - word.start) / span)) * 1000) / 1000
+    if (progress === word.progress) continue
+    word.progress = progress
+    word.element.style.setProperty('--word-progress', String(progress))
+    if (lift) animateLyricWordLift(word.element, progress > 0)
+  }
+}
+
 function resetLyricWords() {
   cancelAnimationFrame(state.lyricWordFrame)
   state.lyricWordFrame = 0
-  for (const word of state.lyricWords) {
-    word.element.style.removeProperty('--word-progress')
-    word.element.classList.remove('sung')
-  }
   state.lyricWordLine = null
   state.lyricWords = []
+  state.lyricWordOutgoing = []
+}
+
+function lyricOpacityAnimating(line) {
+  return line.getAnimations().some((animation) => (
+    animation.id?.startsWith('lyric-opacity-')
+    && (animation.playState === 'running' || animation.playState === 'pending')
+  ))
+}
+
+// The line's opacity is animated as a whole, so a fixed unsung alpha would be
+// multiplied by it: the unsung words dip to ~12% right when a line activates
+// (and flash up as it leaves). Instead the unsung alpha is derived from the
+// line's live opacity every frame, keeping the unsung brightness constant.
+function applyLyricWordRest(line) {
+  const opacity = Number.parseFloat(getComputedStyle(line).opacity) || 1
+  const rest = Math.min(1, lyricUnsungAlpha / Math.max(.01, opacity))
+  line.style.setProperty('--word-rest', rest.toFixed(3))
 }
 
 // Word-timed (YRC) lyrics fill word by word. The loop reads the playback
 // clock every frame while the player is visible and playing, so seeking,
-// pausing and rate changes never need their own bookkeeping.
+// pausing and rate changes never need their own bookkeeping. It keeps running
+// while an outgoing or incoming line is still fading, even when paused.
 function syncLyricWords() {
   const index = state.activeLyric
-  const line = index >= 0 ? $(`.lyric-line[data-lyric-index="${index}"]`, dom.lyricsScroller) : null
+  const found = index >= 0 ? $(`.lyric-line[data-lyric-index="${index}"]`, dom.lyricsScroller) : null
+  const line = found?.classList.contains('has-words') ? found : null
   if (line !== state.lyricWordLine) {
-    resetLyricWords()
-    if (!line?.classList.contains('has-words')) return
+    const previous = state.lyricWordLine
+    if (previous) {
+      // Catch the final word up to this exact boundary before freezing its fill;
+      // the last animation frame may have occurred just before the word ended.
+      updateLyricWordProgress(state.lyricWords, playbackClockTime(), false)
+      // The outgoing line keeps its fill; only the lift settles back down.
+      state.lyricWords.forEach((word) => animateLyricWordLift(word.element, false))
+      state.lyricWordOutgoing = [...state.lyricWordOutgoing.filter((item) => item !== previous && item !== line), previous]
+    }
+    state.lyricWordOutgoing = state.lyricWordOutgoing.filter((item) => item !== line)
     state.lyricWordLine = line
-    state.lyricWords = $$('.lyric-word', line).map((element) => ({
+    state.lyricWords = line ? $$('.lyric-word', line).map((element) => ({
       element,
       start: Number(element.dataset.start) || 0,
       end: Number(element.dataset.end) || 0,
       progress: -1,
-    }))
+    })) : []
   }
-  if (!state.lyricWordLine) return
+  if (!state.lyricWordLine && !state.lyricWordOutgoing.length) return
   cancelAnimationFrame(state.lyricWordFrame)
   state.lyricWordFrame = 0
   const tick = () => {
     state.lyricWordFrame = 0
-    if (state.lyricWordLine !== line) return
-    const time = playbackClockTime()
-    for (const word of state.lyricWords) {
-      const span = Math.max(.001, word.end - word.start)
-      const progress = Math.round(Math.max(0, Math.min(1, (time - word.start) / span)) * 1000) / 1000
-      if (progress === word.progress) continue
-      word.progress = progress
-      word.element.style.setProperty('--word-progress', String(progress))
-      word.element.classList.toggle('sung', progress > 0)
+    const active = state.lyricWordLine
+    if (active) {
+      updateLyricWordProgress(state.lyricWords, playbackClockTime())
+      applyLyricWordRest(active)
     }
-    if (!dom.audio.paused && dom.immersive.classList.contains('open')) {
-      state.lyricWordFrame = requestAnimationFrame(tick)
-    }
+    state.lyricWordOutgoing = state.lyricWordOutgoing.filter((outgoing) => {
+      if (!outgoing.isConnected) return false
+      if (lyricOpacityAnimating(outgoing)) {
+        applyLyricWordRest(outgoing)
+        return true
+      }
+      // Settled: at rest the unsung part is plain text again.
+      outgoing.style.removeProperty('--word-rest')
+      return false
+    })
+    const playing = !dom.audio.paused && dom.immersive.classList.contains('open')
+    const fading = state.lyricWordOutgoing.length || (active && lyricOpacityAnimating(active))
+    if ((active && playing) || fading) state.lyricWordFrame = requestAnimationFrame(tick)
   }
   tick()
 }
@@ -5324,6 +5428,25 @@ function bindEvents() {
         clearCoverPreloads()
         clearAudioPreloads()
       }
+      return
+    }
+    if (event.target.matches('[data-legacy-player]')) {
+      state.legacyPlayer = event.target.checked
+      localStorage.setItem('menoradio.legacyPlayer', String(state.legacyPlayer))
+      $$('[data-modern-player-setting]', dom.page).forEach((card) => { card.hidden = state.legacyPlayer })
+      refreshPlayerStyle({ lyrics: true, backdrop: true })
+      return
+    }
+    if (event.target.matches('[data-word-highlight]')) {
+      state.wordHighlight = event.target.checked
+      localStorage.setItem('menoradio.wordHighlight', String(state.wordHighlight))
+      refreshPlayerStyle({ lyrics: true })
+      return
+    }
+    if (event.target.matches('[data-depth-blur]')) {
+      state.depthBlur = event.target.checked
+      localStorage.setItem('menoradio.depthBlur', String(state.depthBlur))
+      refreshPlayerStyle()
       return
     }
     if (event.target.matches('[data-quick-queue-reveal]')) {

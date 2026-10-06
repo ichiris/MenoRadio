@@ -1,5 +1,8 @@
+/* Bundled typeface, including real italic faces; see assets/fonts/OFL.txt. */
+@import url("./assets/fonts/sarasa-ui.css");
+
 :root {
-  --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  --font: "MenoRadio Sarasa UI SC", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
   --font-size: 30px;
   --lyric-color: #f2f2f2;
   --lyric-opacity: 1;

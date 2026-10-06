@@ -1,0 +1,13 @@
+/* Sarasa UI SC 1.0.28, extracted from the installed TTCs without changing glyphs.
+   The CSS alias keeps the bundled default separate from installed system fonts.
+   License: SIL OFL 1.1 (OFL.txt). */
+@font-face { font-family: "MenoRadio Sarasa UI SC"; font-style: normal; font-weight: 200; font-display: swap; src: url("./SarasaUiSC-ExtraLight.woff") format("woff"); }
+@font-face { font-family: "MenoRadio Sarasa UI SC"; font-style: normal; font-weight: 300; font-display: swap; src: url("./SarasaUiSC-Light.woff") format("woff"); }
+@font-face { font-family: "MenoRadio Sarasa UI SC"; font-style: normal; font-weight: 400; font-display: swap; src: url("./SarasaUiSC-Regular.woff") format("woff"); }
+@font-face { font-family: "MenoRadio Sarasa UI SC"; font-style: normal; font-weight: 600; font-display: swap; src: url("./SarasaUiSC-SemiBold.woff") format("woff"); }
+@font-face { font-family: "MenoRadio Sarasa UI SC"; font-style: normal; font-weight: 700; font-display: swap; src: url("./SarasaUiSC-Bold.woff") format("woff"); }
+@font-face { font-family: "MenoRadio Sarasa UI SC"; font-style: italic; font-weight: 200; font-display: swap; src: url("./SarasaUiSC-ExtraLightItalic.woff") format("woff"); }
+@font-face { font-family: "MenoRadio Sarasa UI SC"; font-style: italic; font-weight: 300; font-display: swap; src: url("./SarasaUiSC-LightItalic.woff") format("woff"); }
+@font-face { font-family: "MenoRadio Sarasa UI SC"; font-style: italic; font-weight: 400; font-display: swap; src: url("./SarasaUiSC-Italic.woff") format("woff"); }
+@font-face { font-family: "MenoRadio Sarasa UI SC"; font-style: italic; font-weight: 600; font-display: swap; src: url("./SarasaUiSC-SemiBoldItalic.woff") format("woff"); }
+@font-face { font-family: "MenoRadio Sarasa UI SC"; font-style: italic; font-weight: 700; font-display: swap; src: url("./SarasaUiSC-BoldItalic.woff") format("woff"); }

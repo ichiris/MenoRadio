@@ -1,10 +1,11 @@
 (() => {
   const fontFamilies = {
-    system: '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif',
-    segoe: '"Segoe UI Variable Text", "Segoe UI", sans-serif',
-    yahei: '"Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
-    sarasa: '"Sarasa UI SC", "Sarasa Gothic SC", "Microsoft YaHei UI", sans-serif',
-    noto: '"Noto Sans CJK SC", "Microsoft YaHei UI", sans-serif',
+    // 'system' is the stored key of the default choice, now the bundled font.
+    system: '"MenoRadio Sarasa UI SC", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif',
+    segoe: '"Segoe UI Variable Text", "MenoRadio Sarasa UI SC", "Segoe UI", sans-serif',
+    yahei: '"Microsoft YaHei UI", "MenoRadio Sarasa UI SC", "Microsoft YaHei", sans-serif',
+    sarasa: '"Sarasa UI SC", "MenoRadio Sarasa UI SC", "Sarasa Gothic SC", "Microsoft YaHei UI", sans-serif',
+    noto: '"Noto Sans CJK SC", "MenoRadio Sarasa UI SC", "Microsoft YaHei UI", sans-serif',
   }
 
   const legacyFontNames = {
@@ -117,16 +118,18 @@
     return `hsl(${hue} 32% ${offset ? 34 : 44}%)`
   }
 
+  const defaultFontLabel = '默认(Sarasa UI SC)'
+
   function fontCss(value) {
     if (fontFamilies[value]) return fontFamilies[value]
     const safe = String(value || '').replace(/["\\]/g, '\\$&')
-    return `"${safe}", "Microsoft YaHei UI", sans-serif`
+    return `"${safe}", "MenoRadio Sarasa UI SC", "Microsoft YaHei UI", sans-serif`
   }
 
   function fontLabel(value) {
-    if (value === 'system') return '跟随系统'
+    if (value === 'system') return defaultFontLabel
     if (legacyFontNames[String(value || '').toLowerCase()]) return legacyFontNames[String(value).toLowerCase()]
-    return String(value || '跟随系统')
+    return String(value || defaultFontLabel)
   }
 
   function sizedImageUrl(value, size = 96) {

@@ -35,7 +35,9 @@
   }
 
   function compactLyricText(text) {
-    return String(text || '').replace(/\s+/g, '')
+    // NFKC folds full-width brackets and ideographic spaces, which the two
+    // lyric sources often write differently for the same line.
+    return String(text || '').normalize('NFKC').replace(/\s+/g, '')
   }
 
   // Word stamps look like "(start,duration,0)text". The text of a word runs
@@ -76,23 +78,75 @@
     if (!original.length) return timed
     if (!timed.length) return original
     return original.map((line) => {
+      // LRC and YRC are timed independently and commonly drift apart by half
+      // a second. A line with identical text is matched across a wider window
+      // (nearest wins, so repeated choruses stay paired with their own line);
+      // a differing line only borrows the duration of a very close stamp.
+      const text = compactLyricText(line.text)
+      let sameText = null
+      for (const candidate of timed) {
+        const distance = Math.abs(candidate.time - line.time)
+        if (distance > 8 || compactLyricText(candidate.text) !== text) continue
+        if (!sameText || distance < Math.abs(sameText.time - line.time)) sameText = candidate
+      }
+      // A word-timed line follows the YRC clock, otherwise the line would be
+      // left (or highlighted) before its words have been sung. lrcTime keeps
+      // the original stamp, which translations are keyed by.
+      if (sameText?.words?.length) return { ...line, time: sameText.time, lrcTime: line.time, duration: sameText.duration, words: sameText.words }
+      if (sameText) return { ...line, duration: sameText.duration }
       const match = timed.find((candidate) => Math.abs(candidate.time - line.time) < .28)
-      if (!match) return line
-      // Word timing is only trusted when both sources carry the same text;
-      // otherwise the line keeps its plain rendering.
-      const sameText = match.words?.length && compactLyricText(match.text) === compactLyricText(line.text)
-      return sameText ? { ...line, duration: match.duration, words: match.words } : { ...line, duration: match.duration }
+      return match ? { ...line, duration: match.duration } : line
+    }).sort((a, b) => a.time - b.time)
+  }
+
+  // Instrumental breaks. LRC blank stamps were written against the LRC clock,
+  // so one landing while a word-timed line is still being sung moves to the
+  // end of that line. YRC also knows when every line ends, so a long silence
+  // after a word-timed line is a break even when the LRC never marked it.
+  function alignLyricBreaks(lines, breaks, minimumGap = 4) {
+    const result = []
+    const lineBefore = (time) => {
+      let index = -1
+      while (index + 1 < lines.length && lines[index + 1].time <= time) index += 1
+      return index
+    }
+    const sungUntil = (line) => {
+      if (!line?.words?.length) return Number.NaN
+      // Some line durations end before the final word's own timestamp. Neither
+      // a blank LRC marker nor an inferred gap may interrupt that word.
+      return Math.max(line.time + (Number(line.duration) || 0),
+        ...line.words.map((word) => word.time + (Number(word.duration) || 0)))
+    }
+    // Blank markers still belong to the original LRC sequence, even if YRC
+    // moves that line's start past the marker. Find its owner on that clock.
+    const originalOrder = [...lines].sort((a, b) => (a.lrcTime ?? a.time) - (b.lrcTime ?? b.time))
+    for (const marker of breaks) {
+      const owner = originalOrder.filter((line) => (line.lrcTime ?? line.time) <= marker).at(-1)
+      const index = owner ? lines.indexOf(owner) : lineBefore(marker)
+      const end = sungUntil(lines[index])
+      const value = Number.isFinite(end) ? Math.max(marker, end) : marker
+      const next = lines[index + 1]
+      if (!next || value < next.time) result.push(value)
+    }
+    lines.forEach((line, index) => {
+      const end = sungUntil(line)
+      const next = lines[index + 1]
+      if (Number.isFinite(end) && next && next.time - end >= minimumGap) result.push(end)
     })
+    return [...new Set(result.map((value) => Math.round(value * 1000) / 1000))].sort((a, b) => a - b)
   }
 
   function mergeLyrics(original, translated, romanized) {
     const translationMap = new Map(translated.map((line) => [Math.round(line.time * 10), line.text]))
     const romanizedMap = new Map(romanized.map((line) => [Math.round(line.time * 10), line.text]))
-    return original.map((line) => ({
-      ...line,
-      translation: translationMap.get(Math.round(line.time * 10)) || '',
-      romanization: romanizedMap.get(Math.round(line.time * 10)) || '',
-    }))
+    return original.map((line) => {
+      const key = Math.round((line.lrcTime ?? line.time) * 10)
+      return {
+        ...line,
+        translation: translationMap.get(key) || '',
+        romanization: romanizedMap.get(key) || '',
+      }
+    })
   }
 
   window.MenoRadioCore = Object.assign(window.MenoRadioCore || {}, {
@@ -102,6 +156,7 @@
     parseLrc,
     parseYrc,
     applyTimedDurations,
+    alignLyricBreaks,
     mergeLyrics,
   })
 })()

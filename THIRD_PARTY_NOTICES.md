@@ -85,6 +85,17 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Sarasa Gothic (Sarasa UI SC)
+
+MenoRadio bundles **Sarasa UI SC 1.0.28** from
+[be5invis/Sarasa-Gothic](https://github.com/be5invis/Sarasa-Gothic), extracted
+from the locally installed TTC files and losslessly packaged as WOFF. The
+ExtraLight, Light, Regular, SemiBold and Bold weights each include their genuine
+italic companion. Glyph outlines, hinting and metrics are preserved. A CSS alias
+(`MenoRadio Sarasa UI SC`) distinguishes the bundled faces from installed fonts. The fonts are
+licensed under the SIL Open Font License, Version 1.1. The full license text is
+shipped beside the font files in `src/assets/fonts/OFL.txt`.
+
 ## Service and product names
 
 MenoRadio is an independent, unofficial client. It is not affiliated with or

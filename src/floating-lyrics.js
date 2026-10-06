@@ -16,8 +16,9 @@ let activePointerId = null
 let hoverTimer = 0
 
 function fontCss(value) {
-  if (!value || value === 'system') return '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif'
-  return `"${String(value).replaceAll('"', '\\"')}", "Microsoft YaHei UI", sans-serif`
+  if (!value || value === 'system') return '"MenoRadio Sarasa UI SC", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif'
+  // The bundled alias covers missing glyphs without shadowing installed fonts.
+  return `"${String(value).replaceAll('"', '\\"')}", "MenoRadio Sarasa UI SC", "Microsoft YaHei UI", sans-serif`
 }
 
 function cancelMarquee() {
