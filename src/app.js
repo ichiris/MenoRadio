@@ -23,12 +23,7 @@ const {
   shuffleTracks,
   rotateTracks,
   buildPlaybackQueue,
-  parseLrcDocument,
-  parseLrc,
-  parseYrc,
-  applyTimedDurations,
-  alignLyricBreaks,
-  mergeLyrics,
+  buildLyricDocument,
 } = window.MenoRadioCore
 const $ = (selector, root = document) => root.querySelector(selector)
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)]
@@ -234,6 +229,7 @@ const state = {
   pageTracks: [],
   playlistTracks: [],
   lyrics: [],
+  lyricsBody: null,
   lyricBreaks: [],
   lyricsLoading: false,
   lyricsReadyGeneration: 0,
@@ -483,7 +479,14 @@ function wordHighlightEnabled() {
 // without word spans, and the backdrop is regenerated for the active style.
 function refreshPlayerStyle({ lyrics = false, backdrop = false } = {}) {
   applyPlayerStyleSettings()
-  if (lyrics && state.lyrics.length) renderLyrics(state.lyrics)
+  if (lyrics) {
+    if (state.lyricsBody) {
+      const document = buildLyricDocument(state.lyricsBody, wordHighlightEnabled())
+      state.lyrics = document.lines
+      state.lyricBreaks = document.breaks
+    }
+    renderLyrics(state.lyrics, state.lyrics.length ? 'ready' : state.lyricsLoading ? 'loading' : 'empty')
+  }
   const cover = $('#immersiveCover')
   if (backdrop && cover?.src) {
     state.backdropUrl = ''
@@ -2136,6 +2139,7 @@ function restorePlaybackSession() {
   state.activeLyric = -1
   state.focusLyric = 0
   state.lyrics = []
+  state.lyricsBody = null
   state.lyricBreaks = []
   const generation = ++state.audioLoadGeneration
   state.lyricsLoading = false
@@ -2742,6 +2746,7 @@ async function loadTrack(track, autoplay = true) {
   state.activeLyric = -1
   state.focusLyric = 0
   state.lyrics = []
+  state.lyricsBody = null
   state.lyricBreaks = []
   state.lyricsLoading = false
   state.lyricsReadyGeneration = 0
@@ -3192,18 +3197,15 @@ async function fetchLyrics(track, generation = state.audioLoadGeneration) {
     try {
       const body = unwrap(await bridge.data.lyrics(track.id))
       if (state.current?.id !== track.id || generation !== state.audioLoadGeneration) return
-      const timed = parseYrc(body.yrc?.lyric)
-      const originalDocument = parseLrcDocument(body.lrc?.lyric)
-      const original = applyTimedDurations(originalDocument.lines, timed)
-      const translated = parseLrc(body.tlyric?.lyric)
-      const romanized = parseLrc(body.romalrc?.lyric)
-      const merged = mergeLyrics(original, translated, romanized)
+      const document = buildLyricDocument(body, wordHighlightEnabled())
+      const merged = document.lines
       const explicitlyEmpty = body.nolyric === true || body.uncollected === true
       if (!merged.length && !explicitlyEmpty && attempt < 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 240))
         continue
       }
-      state.lyricBreaks = alignLyricBreaks(merged, originalDocument.breaks)
+      state.lyricsBody = body
+      state.lyricBreaks = document.breaks
       state.lyrics = merged
       state.lyricsLoading = false
       state.lyricsReadyGeneration = generation
@@ -3828,6 +3830,7 @@ function clearPlaybackQueue() {
   state.queueSource = []
   state.queueIndex = -1
   state.lyrics = []
+  state.lyricsBody = null
   state.lyricBreaks = []
   clearPersistedPlaybackSession()
   resetPlaybackFailureCycle()

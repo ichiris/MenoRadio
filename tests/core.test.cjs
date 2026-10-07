@@ -59,11 +59,11 @@ test('lyrics parsers discard production credits without turning them into instru
   assert.deepEqual(parsed.lines, [{ time: 4, text: '動き出す 身体の奥には' }])
   assert.deepEqual(parsed.breaks, [])
   assert.deepEqual(core.parseYrc('[1000,800](1000,800,0)Composer: yanaginagi\n[2000,900](2000,900,0)動き出す'), [
-    { time: 2, duration: .9, text: '動き出す' },
+    { time: 2, duration: .9, text: '動き出す', words: [{ time: 2, duration: .9, text: '動き出す' }] },
   ])
 })
 
-test('word-timed lyrics keep per-word timing when the words rebuild the line', () => {
+test('YRC keeps timing and spacing, including a single nonempty fragment', () => {
   const [line] = core.parseYrc('[1000,2000](1000,600,0)Hold (1600,500,0)on (2100,900,0)tight')
   assert.equal(line.text, 'Hold on tight')
   assert.deepEqual(line.words, [
@@ -71,55 +71,79 @@ test('word-timed lyrics keep per-word timing when the words rebuild the line', (
     { time: 1.6, duration: .5, text: 'on ' },
     { time: 2.1, duration: .9, text: 'tight' },
   ])
-  const matched = core.applyTimedDurations([{ time: 1, text: 'Hold on tight' }], [line])
-  assert.deepEqual(matched[0].words, line.words)
-  const mismatched = core.applyTimedDurations([{ time: 1, text: 'Something else' }], [line])
-  assert.deepEqual(mismatched, [{ time: 1, duration: 2, text: 'Something else' }])
+  assert.deepEqual(core.parseYrc('[2000,0](2000,0,0)あ')[0].words, [{ time: 2, duration: 0, text: 'あ' }])
 })
 
-test('word timing survives LRC/YRC drift and full-width punctuation differences', () => {
-  const timed = core.parseYrc('[21150,800](21150,400,0)綺(21550,400,0)麗\n[97370,600](97370,300,0)（(97670,300,0)酔）')
-  const merged = core.applyTimedDurations([
-    { time: 20.59, text: '綺麗' },
-    { time: 90.9, text: '(酔)' },
-  ], timed)
-  assert.equal(merged[0].words?.length, 2)
-  assert.equal(merged[1].words?.length, 2)
+test('valid YRC is used independently of LRC text, timing and line count', () => {
+  const body = {
+    lrc: { lyric: '[00:01.00]Entirely different original' },
+    yrc: { lyric: '[21150,800](21150,800,0)綺麗\n[97370,600](97370,600,0)追加句' },
+  }
+  const document = core.buildLyricDocument(body, true)
+  assert.deepEqual(document.lines.map((line) => line.text), ['綺麗', '追加句'])
+  assert.deepEqual(document.lines.map((line) => line.time), [21.15, 97.37])
+  assert.ok(document.lines.every((line) => line.words.length === 1))
+  assert.deepEqual(document.breaks, [])
 })
 
-test('timed and translated lyrics merge by timestamp without mutating text', () => {
-  const original = [{ time: 1, text: 'line' }]
-  const timed = [{ time: 1.1, duration: 2, text: 'timed' }]
-  const withDuration = core.applyTimedDurations(original, timed)
-  assert.deepEqual(withDuration, [{ time: 1, duration: 2, text: 'line' }])
-  assert.deepEqual(core.mergeLyrics(withDuration, [{ time: 1.04, text: '译文' }], []), [
-    { time: 1, duration: 2, text: 'line', translation: '译文', romanization: '' },
-  ])
+test('malformed YRC falls back as a whole instead of silently dropping broken lines', () => {
+  const body = { lrc: { lyric: '[00:01.00]Fallback' } }
+  for (const invalid of [
+    '[1000,1000](1000,1000,0)Valid\n[2000,1000]Missing stamps',
+    '[1000,1000](1000,1000,0)Valid\n[bad,1000](2000,1000,0)Broken',
+    '[1000,1000](1000,1000,0)Valid\n[2000,1000](2000,not-a-number,0)Broken',
+    '[9007199254740992,1000](1000,1000,0)Overflow',
+  ]) {
+    assert.deepEqual(core.parseYrc(invalid), [])
+    const document = core.buildLyricDocument({ ...body, yrc: { lyric: invalid } }, true)
+    assert.equal(document.lines[0].text, 'Fallback')
+    assert.equal(document.lines[0].words, undefined)
+  }
+  assert.equal(core.parseYrc('{"t":0,"c":[{"tx":"Title"}]}\n[1000,1000](1000,1000,0)Solo').length, 1)
 })
 
-test('YRC starts drive line timing while translations retain their LRC timestamps', () => {
-  const lrc = core.parseLrcDocument('[00:20.59]綺麗\n[00:23.19]次の句')
-  const yrc = core.parseYrc('[21150,2170](21150,180,0)綺(21330,1990,0)麗\n[23320,2620](23320,1000,0)次の(24320,1620,0)句')
-  const lines = core.applyTimedDurations(lrc.lines, yrc)
-  const merged = core.mergeLyrics(lines, [{ time: 20.59, text: '美丽' }, { time: 23.19, text: '下一句' }], [{ time: 20.59, text: 'kirei' }])
-  assert.deepEqual(merged.map((line) => line.time), [21.15, 23.32])
-  assert.equal(merged[0].translation, '美丽')
-  assert.equal(merged[0].romanization, 'kirei')
-  assert.equal(merged[1].translation, '下一句')
-  assert.equal(lrc.lines[0].time, 20.59)
+test('YRC translations use their own timestamps, with LRC translations as an optional fallback', () => {
+  const body = {
+    lrc: { lyric: '[00:20.59]Different text\n[00:23.19]Another line' },
+    yrc: { lyric: '[21150,2170](21150,2170,0)綺麗\n[23320,2620](23320,2620,0)次の句' },
+    tlyric: { lyric: '[00:20.59]LRC translation\n[00:23.19]下一句' },
+    ytlrc: { lyric: '[00:21.15]YRC translation' },
+    yromalrc: { lyric: '[00:21.15]kirei' },
+  }
+  const document = core.buildLyricDocument(body, true)
+  assert.deepEqual(document.lines.map((line) => line.time), [21.15, 23.32])
+  assert.equal(document.lines[0].translation, 'YRC translation')
+  assert.equal(document.lines[0].romanization, 'kirei')
+  assert.equal(document.lines[1].translation, '下一句')
 })
 
-test('blank LRC markers cannot interrupt YRC words, including a delayed YRC start', () => {
-  const lrc = core.parseLrcDocument('[00:01.00]前句\n[00:01.50]\n[00:12.00]后句')
-  const yrc = core.parseYrc('[2000,1000](2000,500,0)前(2500,2000,0)句\n[12000,2000](12000,1000,0)后(13000,1000,0)句')
-  const lines = core.applyTimedDurations(lrc.lines, yrc)
-  assert.deepEqual(core.alignLyricBreaks(lines, lrc.breaks), [4.5])
+test('disabling word timing restores LRC text and timestamps; YRC alone is still readable', () => {
+  const body = { lrc: { lyric: '[00:01.00]Original' }, yrc: { lyric: '[2000,1000](2000,1000,0)Timed' } }
+  const ordinary = core.buildLyricDocument(body, false)
+  assert.equal(ordinary.lines[0].text, 'Original')
+  assert.equal(ordinary.lines[0].time, 1)
+  assert.equal(ordinary.lines[0].words, undefined)
+  const yrcOnly = core.buildLyricDocument({ yrc: body.yrc }, false)
+  assert.equal(yrcOnly.lines[0].text, 'Timed')
 })
 
-test('YRC end times infer instrumental gaps and discard markers that run into the next line', () => {
-  const lines = core.parseYrc('[1000,2000](1000,1000,0)前(2000,1000,0)句\n[9000,2000](9000,1000,0)后(10000,1000,0)句')
-  assert.deepEqual(core.alignLyricBreaks(lines, []), [3])
-  const continuous = core.parseYrc('[1000,2100](1000,1000,0)前(2000,1100,0)句\n[3000,2000](3000,1000,0)后(4000,1000,0)句')
+test('explicit blanks are delayed beyond the final YRC word, even when the line duration is shorter', () => {
+  const body = {
+    lrc: { lyric: '[00:01.00]前句\n[00:01.50]\n[00:12.00]后句' },
+    yrc: { lyric: '[2000,1000](2000,500,0)前(2500,2000,0)句\n[12000,2000](12000,2000,0)后句' },
+  }
+  assert.deepEqual(core.buildLyricDocument(body).breaks, [4.5])
+})
+
+test('YRC never infers breaks and explicit short breaks need no minimum gap', () => {
+  const lines = core.parseYrc('[1000,2000](1000,2000,0)前句\n[9000,2000](9000,2000,0)后句')
+  assert.deepEqual(core.alignLyricBreaks(lines, []), [])
+  assert.deepEqual(core.alignLyricBreaks(lines, [2.9]), [3])
+  const short = core.parseYrc('[1000,1000](1000,1000,0)前句\n[2100,1000](2100,1000,0)后句')
+  assert.deepEqual(core.alignLyricBreaks(short, [1.9]), [2])
+  const continuous = core.parseYrc('[1000,2100](1000,2100,0)前句\n[3000,2000](3000,2000,0)后句')
   assert.deepEqual(core.alignLyricBreaks(continuous, [2.9]), [])
+  const touching = core.parseYrc('[1000,2000](1000,2000,0)前句\n[3000,2000](3000,2000,0)后句')
+  assert.deepEqual(core.alignLyricBreaks(touching, [2.9]), [])
   assert.deepEqual(core.alignLyricBreaks([{ time: 1, text: '普通' }, { time: 8, text: '歌词' }], [3]), [3])
 })
