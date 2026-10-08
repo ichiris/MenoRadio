@@ -147,3 +147,122 @@ test('YRC never infers breaks and explicit short breaks need no minimum gap', ()
   assert.deepEqual(core.alignLyricBreaks(touching, [2.9]), [])
   assert.deepEqual(core.alignLyricBreaks([{ time: 1, text: '普通' }, { time: 8, text: '歌词' }], [3]), [3])
 })
+
+
+test('installed face aliases retain native families, bundled fallback and safe CSS names', () => {
+  assert.ok(core.fontCss('system').startsWith('"MenoRadio Sarasa UI SC",'))
+  assert.ok(core.fontCss('Yu Gothic UI Semilight').startsWith('"Yu Gothic UI Semilight", "MenoRadio Local Yu Gothic UI Semilight",'))
+  assert.ok(core.fontCss('Sarasa UI SC').startsWith('"Sarasa UI SC",'))
+  assert.ok(core.fontCss('Yu Gothic UI Semilight').includes('"MenoRadio Sarasa UI SC"'))
+  assert.equal(core.fontCss(''), core.fontCss('system'))
+  assert.ok(core.fontCss('Quoted "Face"').includes(String.raw`"Quoted \"Face\""`))
+})
+
+test('local face loading is shared, resolves complete face names and fails without replacing the selected font', async () => {
+  const vm = require('node:vm')
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const faces = [], registered = []
+  const context = vm.createContext({
+    window: {}, document: { fonts: { add: (face) => registered.push(face) } },
+    FontFace: class {
+      constructor(family, source) { this.family = family; this.source = source; faces.push(this) }
+      load() { return this.source.includes('Missing') ? Promise.reject(new Error('Unavailable')) : Promise.resolve(this) }
+    },
+  })
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/core/utils.js'), 'utf8'), context)
+  const fonts = context.window.MenoRadioCore
+  const first = fonts.ensureLocalFont('Yu Gothic UI Semilight')
+  assert.equal(first, fonts.ensureLocalFont('Yu Gothic UI Semilight'))
+  assert.equal(await first, true)
+  assert.equal(faces[0].source, 'local("Yu Gothic UI Semilight")')
+  assert.equal(faces[0].family, 'MenoRadio Local Yu Gothic UI Semilight')
+  assert.equal(registered.length, 1)
+  assert.equal(await fonts.ensureLocalFont('Missing font'), false)
+  assert.equal(registered.length, 1)
+  assert.ok(fonts.fontCss('Missing font').startsWith('"Missing font",'))
+  assert.equal(await fonts.ensureLocalFont('system'), false)
+  assert.equal(faces.length, 2)
+})
+
+function lyricMotionRenderer() {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const vm = require('node:vm')
+  let rectReads = 0
+  const animations = []
+  const scroller = { scrollHeight: 30000, clientHeight: 800, scrollTop: 0, getBoundingClientRect: () => ({ top: 0, bottom: 800 }) }
+  const lines = Array.from({ length: 300 }, (_, index) => ({
+    getBoundingClientRect() { rectReads += 1; return { top: index * 100 - scroller.scrollTop, bottom: index * 100 + 80 - scroller.scrollTop } },
+    getAnimations: () => [],
+    animate(frames, options) {
+      animations.push({ index, frames, options })
+      return { addEventListener() {} }
+    },
+  }))
+  const context = vm.createContext({
+    state: { focusLyric: 0 },
+    dom: { lyricsScroller: scroller, immersive: { classList: { contains: () => true } } },
+    $$: () => lines,
+    matchMedia: () => ({ matches: false }),
+    cancelAnimationFrame() {},
+    getComputedStyle() { throw new Error('Immediate alignment must not read computed styles') },
+  })
+  const source = fs.readFileSync(path.join(__dirname, '../src/app.js'), 'utf8')
+  for (const name of ['smootherStep', 'softenedLyricMotionProgress', 'lyricSpringFrames', 'setLyricScrollTarget', 'lyricOpacitySnapshot', 'animateLyricWordLift']) {
+    const fn = source.match(new RegExp('^function ' + name + '\\([^]*?^}', 'm'))
+    assert.ok(fn)
+    vm.runInContext(fn[0], context)
+  }
+  return { context, scroller, animations, rectReads: () => rectReads }
+}
+
+test('initial lyric alignment does not measure every line or create animations', () => {
+  const r = lyricMotionRenderer()
+  r.context.setLyricScrollTarget(5100, true)
+  assert.equal(r.scroller.scrollTop, 5100)
+  assert.equal(r.rectReads(), 0)
+  assert.equal(r.animations.length, 0)
+  assert.equal(r.context.lyricOpacitySnapshot({}, .34, true), .34)
+})
+
+test('word highlight state stays current while hidden without reading styles or animating glyphs', () => {
+  const r = lyricMotionRenderer()
+  r.context.dom.immersive.classList.contains = () => false
+  const classes = new Set()
+  const word = {
+    classList: { contains: (name) => classes.has(name), toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name) },
+    getAnimations: () => [],
+    animate() { throw new Error('Hidden words must not start animations') },
+  }
+  r.context.animateLyricWordLift(word, true)
+  assert.equal(classes.has('sung'), true)
+  r.context.animateLyricWordLift(word, false)
+  assert.equal(classes.has('sung'), false)
+})
+
+test('lyric motion keeps the visible spring trajectory and skips lines that never enter the panel', () => {
+  const r = lyricMotionRenderer()
+  r.context.setLyricScrollTarget(100, false, 1)
+  assert.equal(r.scroller.scrollTop, 100)
+  assert.ok(r.animations.length < 15, 'A single-line move must not animate all 300 lines')
+  for (let index = 0; index < 9; index += 1) {
+    const animation = r.animations.find((item) => item.index === index)
+    assert.ok(animation, 'Every visible/incoming line retains its animation')
+    assert.equal(JSON.stringify(animation.frames), JSON.stringify(r.context.lyricSpringFrames(100, Math.max(0, index - 1))))
+  }
+  // The culling allowance contains the full spring path, including its rebound.
+  for (const depth of [0, 1, 6, 100]) {
+    for (const frame of r.context.lyricSpringFrames(100, depth)) {
+      const displacement = Number(frame.transform.match(/-?\d+(?:\.\d+)?/)[0])
+      assert.ok(displacement >= -20 && displacement <= 100)
+    }
+  }
+  // A large seek still animates all lines that travel through the viewport.
+  r.animations.length = 0
+  r.scroller.scrollTop = 0
+  r.context.setLyricScrollTarget(10000, false, 100)
+  for (let index = 0; index <= 107; index += 1) {
+    assert.ok(r.animations.some((item) => item.index === index))
+  }
+})

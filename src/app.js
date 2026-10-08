@@ -17,6 +17,7 @@ const {
   legacyFontNames,
   fontCss,
   fontLabel,
+  ensureLocalFont,
   sizedImageUrl,
   upcomingTracks,
   uniqueTracks,
@@ -40,6 +41,9 @@ let pendingAutomaticRelease = null
 let updateCheckPromise = null
 let zoomControlsHideTimer = 0
 let restoringPageZoom = false
+let immersiveFontWarmupEnabled = false
+let immersiveFontWarmupPending = false
+let immersiveFontWarmupKey = ''
 
 function markdownInline(value) {
   const tokens = []
@@ -457,6 +461,11 @@ function applyDisplaySettings() {
   applyTheme()
   applyPlayerStyleSettings()
   document.documentElement.style.setProperty('--font', fontCss(state.fontFamily))
+  const fontFamily = state.fontFamily
+  void ensureLocalFont(fontFamily).then((loaded) => {
+    if (loaded && state.fontFamily === fontFamily) scheduleImmersiveLyricLayoutSettle()
+  })
+  scheduleImmersiveFontWarmup()
   dom.immersive.dataset.lyricScale = state.lyricScale
   $$('[data-lyric-scale-value]').forEach((button) => {
     const active = button.dataset.lyricScaleValue === state.lyricScale
@@ -1419,6 +1428,7 @@ function filteredFontNames(filter = '') {
 }
 
 function fontOptionMarkup(name) {
+  void ensureLocalFont(name)
   return `<button type="button" class="font-option ${state.fontFamily === name ? 'active' : ''}" data-font-name="${attr(name)}"><span class="font-option-preview" style="font-family:${attr(fontCss(name))}">${escapeHtml(fontLabel(name))}</span>${state.fontFamily === name ? '<small>当前</small>' : ''}</button>`
 }
 
@@ -1457,6 +1467,7 @@ function floatingFontNames(filter = '') {
 }
 
 function floatingFontOptionMarkup(name) {
+  void ensureLocalFont(name)
   return `<button type="button" class="font-option ${state.floatingLyrics.fontFamily === name ? 'active' : ''}" data-floating-font-name="${attr(name)}"><span class="font-option-preview" style="font-family:${attr(fontCss(name))}">${escapeHtml(fontLabel(name))}</span>${state.floatingLyrics.fontFamily === name ? '<small>当前</small>' : ''}</button>`
 }
 
@@ -3251,6 +3262,7 @@ function renderLyrics(lines, status = 'ready') {
     return `<div class="lyric-line${words ? ' has-words' : ''}" data-lyric-index="${index}" data-time="${line.time}"><div class="lyric-content"><div class="lyric-original">${original}</div>${line.translation ? `<div class="lyric-translation translation">${escapeHtml(line.translation)}</div>` : ''}</div></div>`
   }).join('')
   updateLyricVisibility()
+  scheduleImmersiveFontWarmup()
   requestAnimationFrame(() => {
     updateActiveLyric(playbackClockTime(), true, true)
     startLyricsClock()
@@ -3362,12 +3374,22 @@ function lyricBlur(lineIndex, activeIndex, focusIndex = state.focusLyric) {
   return distance === 0 ? 0 : Math.min(2.6, .4 + distance * .45)
 }
 
-function animateLyricOpacity(line, lineIndex, previousActive, previousFocus, nextActive, nextFocus, immediate, durationOverride = 0) {
-  const current = Number.parseFloat(getComputedStyle(line).opacity) || lyricOpacity(lineIndex, previousActive, previousFocus)
-  line.getAnimations().filter((animation) => animation.id?.startsWith('lyric-opacity-')).forEach((animation) => animation.cancel())
+function lyricOpacitySnapshot(line, target, immediate) {
+  if (immediate) return target
+  const stored = Number.parseFloat(line.style.getPropertyValue('--lyric-opacity'))
+  if (Math.abs(stored - target) < .006 && !lyricOpacityAnimating(line)) return target
+  const current = Number.parseFloat(getComputedStyle(line).opacity)
+  return Number.isFinite(current) ? current : target
+}
+
+function animateLyricOpacity(line, lineIndex, previousActive, nextActive, nextFocus, immediate, durationOverride = 0, snapshot = null) {
   const target = lyricOpacity(lineIndex, nextActive, nextFocus)
-  line.style.setProperty('--lyric-opacity', target.toFixed(3))
-  line.style.setProperty('--lyric-blur', `${lyricBlur(lineIndex, nextActive, nextFocus).toFixed(2)}px`)
+  const current = snapshot ?? lyricOpacitySnapshot(line, target, immediate)
+  line.getAnimations().filter((animation) => animation.id?.startsWith('lyric-opacity-')).forEach((animation) => animation.cancel())
+  const opacity = target.toFixed(3)
+  const blur = `${lyricBlur(lineIndex, nextActive, nextFocus).toFixed(2)}px`
+  if (line.style.getPropertyValue('--lyric-opacity') !== opacity) line.style.setProperty('--lyric-opacity', opacity)
+  if (line.style.getPropertyValue('--lyric-blur') !== blur) line.style.setProperty('--lyric-blur', blur)
   if (immediate || Math.abs(current - target) < .006 || matchMedia('(prefers-reduced-motion: reduce)').matches) return
   const incoming = lineIndex === nextActive
   const outgoing = lineIndex === previousActive
@@ -3397,7 +3419,8 @@ function animateLyricScale(line, target, immediate) {
   if (!line) return
   const content = $('.lyric-content', line)
   if (!content) return
-  const currentScale = lyricContentScale(content)
+  immediate ||= !dom.immersive.classList.contains('open') || matchMedia('(prefers-reduced-motion: reduce)').matches
+  const currentScale = immediate ? target : lyricContentScale(content)
   const animations = content.getAnimations().filter((animation) => animation.id?.startsWith('lyric-scale-'))
   animations.forEach((animation) => animation.cancel())
   content.style.setProperty('--lyric-scale', target.toFixed(4))
@@ -3475,9 +3498,13 @@ function updateLyricEmphasis(nextActive, nextFocus, immediate = false, force = f
   state.activeLyric = nextActive
   syncFloatingLyrics()
   const lines = $$('.lyric-line', dom.lyricsScroller)
+  immediate ||= !dom.immersive.classList.contains('open') || matchMedia('(prefers-reduced-motion: reduce)').matches
+  // Read live values before changing any classes/styles. Distant lines whose
+  // opacity has already settled need no computed-style read at all.
+  const snapshots = lines.map((line, index) => lyricOpacitySnapshot(line, lyricOpacity(index, nextActive, nextFocus), immediate))
   lines.forEach((line, lineIndex) => {
     line.classList.toggle('active', lineIndex === nextActive)
-    animateLyricOpacity(line, lineIndex, previousActive, previousFocus, nextActive, nextFocus, immediate)
+    animateLyricOpacity(line, lineIndex, previousActive, nextActive, nextFocus, immediate, 0, snapshots[lineIndex])
   })
 
   // Scaling has its own lifecycle. Only the outgoing and incoming lines are
@@ -3499,10 +3526,11 @@ const lyricUnsungAlpha = .34
 // rise. A monotonic easing and a longer descent avoid a tiny snap/rebound.
 function animateLyricWordLift(element, lifted) {
   if (element.classList.contains('sung') === lifted) return
-  const current = getComputedStyle(element).transform
+  const immediate = !dom.immersive.classList.contains('open') || matchMedia('(prefers-reduced-motion: reduce)').matches
+  const current = immediate ? null : getComputedStyle(element).transform
   element.getAnimations().filter((animation) => animation.id === 'lyric-word-lift').forEach((animation) => animation.cancel())
   element.classList.toggle('sung', lifted)
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  if (immediate) return
   const target = getComputedStyle(element).transform
   const animation = element.animate([
     { transform: current },
@@ -3671,18 +3699,29 @@ function setLyricScrollTarget(target, immediate = false, focusIndex = state.focu
   cancelAnimationFrame(state.manualLyricFrame)
   state.manualLyricFrame = 0
   state.manualLyricTarget = next
-  if (!immediate && Math.abs(delta) < .5 && !matchMedia('(prefers-reduced-motion: reduce)').matches) return
-  const visualTops = lines.map((line) => line.getBoundingClientRect().top)
+  immediate ||= !dom.immersive.classList.contains('open') || matchMedia('(prefers-reduced-motion: reduce)').matches
+  if (!immediate && Math.abs(delta) < .5) return
+  // Hidden/initial alignment only sets scrollTop; reading every line's visual
+  // position here used to force a full lyric layout during the first reveal.
+  const visualRects = immediate ? null : lines.map((line) => line.getBoundingClientRect())
   lines.forEach((line) => line.getAnimations().filter((animation) => animation.id?.startsWith('lyric-scroll-')).forEach((animation) => animation.cancel()))
-  if (immediate || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  if (immediate) {
     dom.lyricsScroller.scrollTop = next
     return
   }
 
   dom.lyricsScroller.scrollTop = next
-
+  const viewport = dom.lyricsScroller.getBoundingClientRect()
+  const settledRects = lines.map((line) => line.getBoundingClientRect())
   lines.forEach((line, lineIndex) => {
-    const visualDelta = visualTops[lineIndex] - line.getBoundingClientRect().top
+    const before = visualRects[lineIndex]
+    const after = settledRects[lineIndex]
+    const visualDelta = before.top - after.top
+    // Include the entire travel path, a generous spring-overshoot allowance,
+    // and glyph/blur overflow. A skipped line cannot enter the clipped panel.
+    const padding = 48 + Math.abs(visualDelta) * .2
+    if (Math.max(before.bottom, after.bottom) + padding < viewport.top
+      || Math.min(before.top, after.top) - padding > viewport.bottom) return
     const relative = lineIndex - focusIndex
     const queueDepth = delta >= 0 ? Math.max(0, relative) : Math.max(0, -relative)
     const delay = Math.min(180, queueDepth * 30)
@@ -3706,8 +3745,11 @@ function setManualLyricReadability(readable, scheduleReset = true) {
     if (readable) {
       $$('.lyric-line', dom.lyricsScroller).forEach((line) => line.getAnimations().filter((animation) => animation.id?.startsWith('lyric-scroll-')).forEach((animation) => animation.cancel()))
     }
-    $$('.lyric-line', dom.lyricsScroller).forEach((line, lineIndex) => {
-      animateLyricOpacity(line, lineIndex, state.activeLyric, state.focusLyric, state.activeLyric, state.focusLyric, false, readable ? 180 : 420)
+    const lines = $$('.lyric-line', dom.lyricsScroller)
+    const immediate = !dom.immersive.classList.contains('open') || matchMedia('(prefers-reduced-motion: reduce)').matches
+    const snapshots = lines.map((line, index) => lyricOpacitySnapshot(line, lyricOpacity(index, state.activeLyric, state.focusLyric), immediate))
+    lines.forEach((line, lineIndex) => {
+      animateLyricOpacity(line, lineIndex, state.activeLyric, state.activeLyric, state.focusLyric, immediate, readable ? 180 : 420, snapshots[lineIndex])
     })
   }
   if (readable && scheduleReset) {
@@ -4430,11 +4472,39 @@ function scheduleImmersiveLyricLayoutSettle(delay = 0) {
   state.immersiveLayoutSettleTimer = window.setTimeout(settle, Math.max(0, delay))
 }
 
+function scheduleImmersiveFontWarmup() {
+  if (!immersiveFontWarmupEnabled || immersiveFontWarmupPending || !document.fonts) return
+  if (immersiveFontWarmupKey === state.fontFamily) return
+  immersiveFontWarmupPending = true
+  const warm = () => {
+    immersiveFontWarmupPending = false
+    const fontFamily = state.fontFamily
+    if (immersiveFontWarmupKey === fontFamily) return
+    immersiveFontWarmupKey = fontFamily
+    const sample = state.lyrics.slice(0, 2).map((line) => line.text + (line.translation || '')).join('') || '音乐 日本語 MenoRadio'
+    // Decode the lyric weights during idle time, outside the entrance animation.
+    // Use the existing font files and styling.
+    void ensureLocalFont(fontFamily)
+      .then(() => document.fonts.load(`740 32px ${fontCss(fontFamily)}`, sample))
+      .then(() => document.fonts.load(`520 24px ${fontCss(fontFamily)}`, sample))
+      .then(() => {
+        if (state.fontFamily === fontFamily && !dom.immersive.classList.contains('open')) {
+          updateLyricScrollFocus(state.focusLyric, state.activeLyric, state.activeLyric, true, true)
+        }
+      }).catch(() => {})
+  }
+  if (window.requestIdleCallback) window.requestIdleCallback(warm, { timeout: 2000 })
+  else window.setTimeout(warm, 200)
+}
+
 function applyImmersiveLayout(immediate = false) {
   const content = $('.immersive-content', dom.immersive)
   if (!content) return
   const width = window.innerWidth
   const height = window.innerHeight
+  const signature = `${width}:${height}:${state.lyricScale}:${state.legacyPlayer}`
+  if (state.immersiveLayoutSignature === signature) return
+  state.immersiveLayoutSignature = signature
   const clamp = (minimum, value, maximum) => Math.max(minimum, Math.min(maximum, value))
   const cover = Math.round(clamp(288, Math.min((height - 100) * .48, width * .32), 700))
   const gap = Math.round(clamp(26, width * .0195, 50))
@@ -4461,8 +4531,10 @@ function applyImmersiveLayout(immediate = false) {
   content.style.setProperty('--content-shift', `${compactShift}px`)
   content.style.setProperty('--content-height', `${Math.max(0, height - 74)}px`)
   dom.immersive.style.setProperty('--auto-lyric-font-size', `${autoLyricFontSize}px`)
-  if (immediate) requestAnimationFrame(() => content.classList.remove('layout-instant'))
-  scheduleImmersiveLyricLayoutSettle(immediate ? 80 : 540)
+  if (immediate) {
+    updateLyricScrollFocus(state.focusLyric, state.activeLyric, state.activeLyric, true, true)
+    requestAnimationFrame(() => content.classList.remove('layout-instant'))
+  } else scheduleImmersiveLyricLayoutSettle(540)
 }
 
 function showImmersiveChrome() {
@@ -6104,6 +6176,7 @@ function onPageClick(event) {
   const floatingFontOption = event.target.closest('[data-floating-font-name]')
   if (floatingFontOption) {
     const value = floatingFontOption.dataset.floatingFontName
+    void ensureLocalFont(value)
     state.floatingLyrics.fontFamily = value
     const label = $('[data-floating-font-picker] span', dom.page)
     if (label) {
@@ -6323,6 +6396,8 @@ async function init() {
       dom.initializingScreen?.classList.add('hiding')
       window.setTimeout(() => {
         dom.initializingScreen?.remove()
+        immersiveFontWarmupEnabled = true
+        scheduleImmersiveFontWarmup()
         // Update discovery is deliberately outside initialization. A slow or
         // unavailable GitHub connection must not delay the app becoming usable.
         window.setTimeout(() => { void checkForUpdates({ automatic: true }) }, 900)

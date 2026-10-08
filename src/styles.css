@@ -910,9 +910,11 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
   .lyric-line {
     position: relative; margin: 0 0 calc(var(--lyric-font-size, 40px) * .62); padding: calc(var(--lyric-font-size, 34px) * .2) 14px;
     color: #e2e4ea; opacity: var(--lyric-opacity, .22); font-size: var(--lyric-font-size, 34px);
-    transform-origin: left center; cursor: pointer; will-change: transform, opacity;
+    transform-origin: left center; cursor: pointer;
   }
-  .lyric-content { width: 96.3%; transform: scale(var(--lyric-scale, 1)); transform-origin: left center; will-change: transform; filter: blur(var(--lyric-blur, 0px)) brightness(1); transition: filter 1.1s ease; }
+  /* WAAPI promotes the moving lines. Permanently promoting the entire song
+     would allocate hundreds of layers when the player first becomes visible. */
+  .lyric-content { width: 96.3%; transform: scale(var(--lyric-scale, 1)); transform-origin: left center; filter: blur(var(--lyric-blur, 0px)) brightness(1); transition: filter 1.1s ease; }
   .lyric-line:hover .lyric-content { filter: blur(0px) brightness(1.13); transition-duration: .6s; }
   .immersive-player.depth-blur-off .lyric-line { --lyric-blur: 0px !important; }
   /* Keep emphasis on the glyphs: an outer glow is cut off by the scroller

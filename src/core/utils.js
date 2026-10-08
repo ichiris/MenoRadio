@@ -119,11 +119,38 @@
   }
 
   const defaultFontLabel = '默认(Sarasa UI SC)'
+  const localFontLoads = new Map()
+
+  function cssFontName(value) {
+    return `"${String(value).replace(/["\\]/g, '\\$&').replace(/[\r\n\f]/g, ' ')}"`
+  }
+
+  function localFontAlias(value) {
+    return `MenoRadio Local ${String(value)}`
+  }
+
+  function ensureLocalFont(value) {
+    const name = legacyFontNames[value] || String(value || '')
+    if (!name || name === 'system' || typeof FontFace === 'undefined' || typeof document === 'undefined' || !document.fonts) return Promise.resolve(false)
+    if (localFontLoads.has(name)) return localFontLoads.get(name)
+    // GDI lists some faces (e.g. Yu Gothic UI Semilight) as families, while
+    // DirectWrite only exposes their typographic family to CSS. local() also
+    // resolves full face names, so keep a face alias behind the native family.
+    const loading = Promise.resolve().then(() => {
+      const face = new FontFace(localFontAlias(name), `local(${cssFontName(name)})`)
+      return face.load()
+    }).then((face) => {
+      document.fonts.add(face)
+      return true
+    }).catch(() => false)
+    localFontLoads.set(name, loading)
+    return loading
+  }
 
   function fontCss(value) {
     if (fontFamilies[value]) return fontFamilies[value]
-    const safe = String(value || '').replace(/["\\]/g, '\\$&')
-    return `"${safe}", "MenoRadio Sarasa UI SC", "Microsoft YaHei UI", sans-serif`
+    if (!value) return fontFamilies.system
+    return `${cssFontName(value)}, ${cssFontName(localFontAlias(value))}, "MenoRadio Sarasa UI SC", "Microsoft YaHei UI", sans-serif`
   }
 
   function fontLabel(value) {
@@ -180,6 +207,7 @@
     legacyFontNames,
     fontCss,
     fontLabel,
+    ensureLocalFont,
     sizedImageUrl,
     upcomingTracks,
   })

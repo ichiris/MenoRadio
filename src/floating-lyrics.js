@@ -1,4 +1,5 @@
 const bridge = window.floatingLyrics
+const { fontCss, ensureLocalFont } = window.MenoRadioCore
 const surface = document.querySelector('#surface')
 const primary = document.querySelector('#primary')
 const primaryViewport = document.querySelector('#primaryViewport')
@@ -14,12 +15,6 @@ let resizing = false
 let moving = false
 let activePointerId = null
 let hoverTimer = 0
-
-function fontCss(value) {
-  if (!value || value === 'system') return '"MenoRadio Sarasa UI SC", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif'
-  // The bundled alias covers missing glyphs without shadowing installed fonts.
-  return `"${String(value).replaceAll('"', '\\"')}", "MenoRadio Sarasa UI SC", "Microsoft YaHei UI", sans-serif`
-}
 
 function cancelMarquee() {
   marqueeAnimations.forEach((animation) => animation.cancel())
@@ -70,7 +65,14 @@ function scheduleSurfaceHide() {
 }
 
 function applyConfig(next = {}) {
+  const previousFontFamily = config.fontFamily
   config = { ...config, ...next }
+  const fontFamily = config.fontFamily
+  if (fontFamily !== previousFontFamily) {
+    void ensureLocalFont(fontFamily).then((loaded) => {
+      if (loaded && config.fontFamily === fontFamily) layoutMarquee()
+    })
+  }
   document.documentElement.style.setProperty('--font', fontCss(config.fontFamily))
   document.documentElement.style.setProperty('--font-size', `${Number(config.fontSize) || 30}px`)
   document.documentElement.style.setProperty('--lyric-color', config.color || '#f2f2f2')
