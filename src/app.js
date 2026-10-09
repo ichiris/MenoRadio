@@ -178,6 +178,7 @@ function renderSafeMarkdown(markdown) {
 }
 
 const dom = {
+  app: $('#app'),
   page: $('#page'),
   audio: $('#audio'),
   playlistNav: $('#playlistNav'),
@@ -203,6 +204,7 @@ const dom = {
   lyricsScroller: $('#lyricsScroller'),
   initializingScreen: $('#initializingScreen'),
 }
+dom.immersive.inert = true
 
 function readSearchHistory() {
   try {
@@ -331,7 +333,14 @@ const state = {
   immersiveLayoutTimer: 0,
   immersiveLayoutSettleTimer: 0,
   immersiveLayoutGeneration: 0,
-  immersiveAppSuspendTimer: 0,
+  immersiveRequestedOpen: false,
+  immersiveTransitionGeneration: 0,
+  immersiveSurfaceRevision: 0,
+  immersiveSurfacePrepared: false,
+  immersiveSurfacePromise: null,
+  immersiveSurfaceIdle: 0,
+  immersiveSurfaceTimer: 0,
+  immersiveSurfaceCooldownUntil: 0,
   immersiveViewTimer: 0,
   immersiveViewPhaseTimer: 0,
   immersiveViewGeneration: 0,
@@ -467,6 +476,7 @@ function applyDisplaySettings() {
   })
   scheduleImmersiveFontWarmup()
   dom.immersive.dataset.lyricScale = state.lyricScale
+  scheduleImmersiveSurfaceWarmup()
   $$('[data-lyric-scale-value]').forEach((button) => {
     const active = button.dataset.lyricScaleValue === state.lyricScale
     button.classList.toggle('active', active)
@@ -478,6 +488,14 @@ function applyPlayerStyleSettings() {
   if (state.legacyPlayer) document.documentElement.dataset.playerStyle = 'legacy'
   else delete document.documentElement.dataset.playerStyle
   dom.immersive.classList.toggle('depth-blur-off', !state.depthBlur)
+  syncImmersiveAppPresentation()
+}
+
+function syncImmersiveAppPresentation() {
+  const receded = !state.legacyPlayer && dom.immersive.classList.contains('open')
+  dom.app.classList.toggle('immersive-receded', receded)
+  if (receded) document.body.style.setProperty('background-color', '#0a0b0d')
+  else document.body.style.removeProperty('background-color')
 }
 
 function wordHighlightEnabled() {
@@ -2904,10 +2922,11 @@ function updateImmersiveBackdrop(url, decodedImage = null) {
     // Bright artwork receives a deeper veil so white lyrics keep contrast.
     const veil = processed ? Math.max(.14, Math.min(.42, .2 + (luminance - .42) * .62)) : .26
     dom.immersive.style.setProperty('--backdrop-veil', veil.toFixed(3))
-    dom.immersive.style.setProperty('--cover-ambient', coverValue)
+    $('.cover-glow', dom.immersive)?.style.setProperty('--cover-ambient', coverValue)
     next.classList.add('active')
     current?.classList.remove('active')
     state.backdropLayer = nextIndex
+    scheduleImmersiveSurfaceWarmup()
     clearTimeout(state.backdropTransitionTimer)
     state.backdropTransitionTimer = window.setTimeout(() => {
       if (current && !current.classList.contains('active')) current.style.removeProperty('--cover')
@@ -3263,6 +3282,7 @@ function renderLyrics(lines, status = 'ready') {
   }).join('')
   updateLyricVisibility()
   scheduleImmersiveFontWarmup()
+  scheduleImmersiveSurfaceWarmup()
   requestAnimationFrame(() => {
     updateActiveLyric(playbackClockTime(), true, true)
     startLyricsClock()
@@ -3287,7 +3307,7 @@ function syncFloatingLyrics(force = false) {
   }
   const key = JSON.stringify(payload)
   if (!force && key === state.floatingLyricsPayloadKey) return
-  state.floatingLyricsPayloadKey = key
+    state.floatingLyricsPayloadKey = key
   bridge.floatingLyrics.update(payload).catch(() => {})
 }
 
@@ -3571,9 +3591,12 @@ function lyricOpacityAnimating(line) {
 // (and flash up as it leaves). Instead the unsung alpha is derived from the
 // line's live opacity every frame, keeping the unsung brightness constant.
 function applyLyricWordRest(line) {
-  const opacity = Number.parseFloat(getComputedStyle(line).opacity) || 1
+  const settled = Number.parseFloat(line.style.getPropertyValue('--lyric-opacity'))
+  const opacity = !lyricOpacityAnimating(line) && Number.isFinite(settled)
+    ? settled : Number.parseFloat(getComputedStyle(line).opacity) || 1
   const rest = Math.min(1, lyricUnsungAlpha / Math.max(.01, opacity))
-  line.style.setProperty('--word-rest', rest.toFixed(3))
+  const value = rest.toFixed(3)
+  if (line.style.getPropertyValue('--word-rest') !== value) line.style.setProperty('--word-rest', value)
 }
 
 // Word-timed (YRC) lyrics fill word by word. The loop reads the playback
@@ -4491,6 +4514,7 @@ function scheduleImmersiveFontWarmup() {
         if (state.fontFamily === fontFamily && !dom.immersive.classList.contains('open')) {
           updateLyricScrollFocus(state.focusLyric, state.activeLyric, state.activeLyric, true, true)
         }
+        scheduleImmersiveSurfaceWarmup()
       }).catch(() => {})
   }
   if (window.requestIdleCallback) window.requestIdleCallback(warm, { timeout: 2000 })
@@ -4583,28 +4607,87 @@ async function setImmersiveFullScreen(value) {
   return state.fullScreen
 }
 
-function openImmersive(open = true) {
-  if (open && !state.current) return
-  clearTimeout(state.immersiveAppSuspendTimer)
-  // Keep the page visible under the slide transition. Once the player covers
-  // it, skip the underlying (possibly hundreds of rows) layout tree so native
-  // window resizing only needs to lay out the immersive player.
-  if (!open) document.body.classList.remove('immersive-app-suspended')
+function afterImmersivePaints(callback, frames = 2) {
+  requestAnimationFrame(() => {
+    if (frames > 1) afterImmersivePaints(callback, frames - 1)
+    else callback()
+  })
+}
+
+function warmImmersiveSurface() {
+  if (state.legacyPlayer || matchMedia('(prefers-reduced-motion: reduce)').matches
+    || state.immersiveSurfacePrepared || dom.immersive.classList.contains('open')
+    || performance.now() < state.immersiveSurfaceCooldownUntil) return Promise.resolve()
+  if (state.immersiveSurfacePromise) return state.immersiveSurfacePromise
+  const revision = state.immersiveSurfaceRevision
+  applyImmersiveLayout(true)
+  // visibility:hidden/off-screen elements do not rasterize. Two real paint
+  // opportunities at imperceptible opacity prime the exact background, grain,
+  // artwork, glyphs and compositor surfaces before the entrance starts.
+  dom.immersive.classList.add('render-warming')
+  state.immersiveSurfacePromise = new Promise((resolve) => {
+    afterImmersivePaints(() => {
+      dom.immersive.classList.add('render-reset')
+      dom.immersive.classList.remove('render-warming')
+      afterImmersivePaints(() => {
+        dom.immersive.classList.remove('render-reset')
+        state.immersiveSurfacePrepared = revision === state.immersiveSurfaceRevision
+        state.immersiveSurfacePromise = null
+        resolve()
+        if (!state.immersiveSurfacePrepared) scheduleImmersiveSurfaceWarmup(false)
+      })
+    }, 3)
+  })
+  return state.immersiveSurfacePromise
+}
+
+function scheduleImmersiveSurfaceWarmup(invalidate = true) {
+  if (invalidate) {
+    state.immersiveSurfaceRevision += 1
+    state.immersiveSurfacePrepared = false
+  }
+  if (!immersiveFontWarmupEnabled || !state.current || state.legacyPlayer
+    || state.immersiveRequestedOpen || dom.immersive.classList.contains('open')
+    || state.immersiveSurfacePrepared || state.immersiveSurfacePromise || state.immersiveSurfaceIdle) return
+  const remaining = state.immersiveSurfaceCooldownUntil - performance.now()
+  if (remaining > 0) {
+    if (!state.immersiveSurfaceTimer) state.immersiveSurfaceTimer = window.setTimeout(() => {
+      state.immersiveSurfaceTimer = 0
+      scheduleImmersiveSurfaceWarmup(false)
+    }, remaining + 40)
+    return
+  }
+  const prepare = () => {
+    state.immersiveSurfaceIdle = 0
+    if (document.hidden || state.legacyPlayer || state.immersiveRequestedOpen
+      || dom.immersive.classList.contains('open')) return
+    if (performance.now() < state.immersiveSurfaceCooldownUntil) {
+      scheduleImmersiveSurfaceWarmup(false)
+      return
+    }
+    void warmImmersiveSurface()
+  }
+  if (window.requestIdleCallback) state.immersiveSurfaceIdle = window.requestIdleCallback(prepare, { timeout: 2000 })
+  else state.immersiveSurfaceIdle = window.setTimeout(prepare, 200)
+}
+
+function commitImmersiveVisibility(open) {
+  const wasOpen = dom.immersive.classList.contains('open')
   if (open) applyImmersiveLayout(true)
   dom.immersive.classList.toggle('open', open)
+  syncImmersiveAppPresentation()
+  dom.immersive.inert = !open
   dom.immersive.setAttribute('aria-hidden', String(!open))
   syncFloatingLyrics(true)
   if (open) {
-    const generation = state.audioLoadGeneration
-    if (state.coverReadyGeneration !== generation) updateNowPlaying()
-    if (!state.lyricsLoading && state.lyricsReadyGeneration !== generation) void fetchLyrics(state.current, generation)
     syncLyricWords()
     showImmersiveChrome()
-    state.immersiveAppSuspendTimer = window.setTimeout(() => {
-      if (dom.immersive.classList.contains('open')) document.body.classList.add('immersive-app-suspended')
-    }, 660)
   }
   else {
+    if (wasOpen) {
+      state.immersiveSurfacePrepared = true
+      state.immersiveSurfaceCooldownUntil = performance.now() + (state.legacyPlayer ? 560 : 660)
+    }
     clearTimeout(state.immersiveLayoutSettleTimer)
     state.immersiveLayoutSettleTimer = 0
     state.immersiveLayoutGeneration += 1
@@ -4616,6 +4699,34 @@ function openImmersive(open = true) {
     $('#fontSizeMenu').setAttribute('aria-hidden', 'true')
     setImmersiveVolumePopover(false)
   }
+}
+
+function openImmersive(open = true) {
+  if (open && !state.current) return
+  state.immersiveRequestedOpen = open
+  const generation = ++state.immersiveTransitionGeneration
+  const restoringPage = document.body.classList.contains('immersive-app-suspended')
+  document.body.classList.remove('immersive-app-suspended')
+  const commit = () => {
+    if (generation === state.immersiveTransitionGeneration) commitImmersiveVisibility(open)
+  }
+  if (open) {
+    applyImmersiveLayout(true)
+    const audioGeneration = state.audioLoadGeneration
+    if (state.coverReadyGeneration !== audioGeneration) updateNowPlaying()
+    if (!state.lyricsLoading && state.lyricsReadyGeneration !== audioGeneration) void fetchLyrics(state.current, audioGeneration)
+    if (!state.legacyPlayer && !state.immersiveSurfacePrepared
+      && !dom.immersive.classList.contains('open') && performance.now() >= state.immersiveSurfaceCooldownUntil) {
+      void warmImmersiveSurface().then(commit)
+      return
+    }
+  } else if (restoringPage && dom.immersive.classList.contains('open')) {
+    // A live resize may temporarily lock the underlying page. Restore it while
+    // the opaque player still covers it, before starting the exit animation.
+    afterImmersivePaints(commit, 3)
+    return
+  }
+  commit()
 }
 
 function toggleQueue(open = !dom.queueDrawer.classList.contains('open'), options = {}) {
@@ -6020,15 +6131,25 @@ function bindEvents() {
       event.preventDefault(); togglePlayback()
     } else if (event.key === 'Escape') {
       if (dom.modalLayer.classList.contains('open')) closeModal()
-      else if (dom.immersive.classList.contains('open')) openImmersive(false)
+      else if (state.immersiveRequestedOpen || dom.immersive.classList.contains('open')) openImmersive(false)
       else toggleQueue(false)
     }
   })
   window.addEventListener('resize', () => {
     hideTrackMenu()
-    if (!dom.immersive.classList.contains('open')) return
+    if (!dom.immersive.classList.contains('open')) {
+      scheduleImmersiveSurfaceWarmup()
+      return
+    }
+    if (!state.immersiveRequestedOpen) return
+    // Retain the page's display list/texture during ordinary playback. Lock it
+    // only through a live resize, then restore it behind the opaque player.
+    document.body.classList.add('immersive-app-suspended')
     clearTimeout(state.immersiveLayoutTimer)
-    state.immersiveLayoutTimer = window.setTimeout(() => applyImmersiveLayout(false), 220)
+    state.immersiveLayoutTimer = window.setTimeout(() => {
+      applyImmersiveLayout(false)
+      document.body.classList.remove('immersive-app-suspended')
+    }, 220)
   })
   window.addEventListener('online', async () => {
     // Resume thumbnails that exhausted their transient retry budget while the
@@ -6398,6 +6519,7 @@ async function init() {
         dom.initializingScreen?.remove()
         immersiveFontWarmupEnabled = true
         scheduleImmersiveFontWarmup()
+        scheduleImmersiveSurfaceWarmup()
         // Update discovery is deliberately outside initialization. A slow or
         // unavailable GitHub connection must not delay the app becoming usable.
         window.setTimeout(() => { void checkForUpdates({ automatic: true }) }, 900)

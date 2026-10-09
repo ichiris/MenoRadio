@@ -201,9 +201,8 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 svg .fill, svg.fill, .fill { fill: currentColor; stroke: none; }
 
 #app { width: 100%; height: 100%; background: var(--app-bg); }
-/* The immersive player fully covers the application after its entrance. Skip
-   covered descendants so a large playlist is not reflowed on every native
-   resize frame. Its full-size app box is restored before the player leaves. */
+/* Lock the covered page only during live resize. Hiding it throughout playback
+   discards its paint cache and makes the first exit rebuild the whole page. */
 body.immersive-app-suspended #app { content-visibility: hidden; }
 
 .initializing-screen { position: fixed; z-index: 1000; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; background: var(--initializing-bg); color: var(--text); opacity: 1; transition: opacity .3s ease, visibility 0s .3s; }
@@ -692,7 +691,9 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
    one soft glass language on top of it.
    ------------------------------------------------------------------------- */
 
-@property --backdrop-veil { syntax: "<number>"; inherits: true; initial-value: .2; }
+/* Only the backdrop pseudo-element needs the animated veil. Letting every
+   word inherit it invalidates the entire lyric tree on each animation frame. */
+@property --backdrop-veil { syntax: "<number>"; inherits: false; initial-value: .2; }
 @keyframes backdrop-orbit {
   0% { transform: rotate(0deg) translate3d(0, 0, 0) scale(1); }
   50% { transform: rotate(180deg) translate3d(6vmax, -4vmax, 0) scale(1.14); }
@@ -716,18 +717,21 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
     --imm-text-soft: rgba(255, 255, 255, .66);
     --imm-active-bg: rgba(255, 255, 255, .94);
     --imm-active-fg: #1c2026;
-    position: fixed; z-index: 100; inset: 0; visibility: hidden; transform: translateY(100%);
+    position: fixed; z-index: 100; inset: 0; visibility: visible; transform: translateY(100%); pointer-events: none;
+    will-change: transform, opacity;
     transition: transform .66s var(--imm-ease), visibility 0s .66s, --backdrop-veil 1.4s ease;
     /* clip, not hidden: the oversized backdrop layers must never become a
        scroll range that focus or scrollIntoView could move. */
     overflow: clip; background: #111316; color: rgba(255,255,255,.92); -webkit-app-region: no-drag; contain: layout paint style;
   }
-  .immersive-player.open { visibility: visible; transform: translateY(0); transition-delay: 0s; }
+  .immersive-player.open { visibility: visible; transform: translateY(0); transition-delay: 0s; pointer-events: auto; }
+  .immersive-player.render-warming:not(.open) { transform: translateY(0); opacity: .001; transition: none; }
+  .immersive-player.render-reset:not(.open) { transition: none; }
+  .immersive-player:not(.open) .immersive-header { -webkit-app-region: no-drag; }
 
   /* The main window recedes like a sheet while the player rises over it. */
-  #app { transition: scale .66s cubic-bezier(.16, 1, .3, 1), opacity .66s ease, border-radius .66s ease; transform-origin: 50% 100%; }
-  body:has(> .immersive-player.open) { background: #0a0b0d; }
-  body:has(> .immersive-player.open) #app { scale: .94; opacity: .3; border-radius: 16px; overflow: hidden; }
+  #app { transition: scale .66s cubic-bezier(.16, 1, .3, 1), opacity .66s ease, border-radius .66s ease; transform-origin: 50% 100%; will-change: scale, opacity; overflow: hidden; }
+  #app.immersive-receded { scale: .94; opacity: .3; border-radius: 16px; overflow: hidden; }
 
   /* Living backdrop. Each layer is the cover pre-blurred on a canvas, so only
      transforms animate here. Two masked copies orbit in opposite directions to
@@ -760,6 +764,7 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
   .immersive-player:is(.paused, :not(.open)) :is(.immersive-backdrop, .immersive-backdrop::before, .immersive-backdrop::after) { animation-play-state: paused; }
 
   .immersive-player::before {
+    --backdrop-veil: inherit;
     content: ""; position: absolute; z-index: 1; inset: 0; pointer-events: none;
     background:
       radial-gradient(130% 95% at 50% 42%, transparent 48%, rgba(5, 7, 9, .34) 100%),
@@ -815,7 +820,7 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
   }
 
   /* Artwork */
-  .cover-stage { position: relative; width: 100%; aspect-ratio: 1; }
+  .cover-stage { position: relative; width: 100%; aspect-ratio: 1; will-change: scale, translate, opacity; }
   .cover-glow {
     position: absolute; z-index: 0; inset: 10% 8% -4%; border-radius: 28px;
     background-image: var(--cover-ambient); background-size: cover; background-position: center;
@@ -899,7 +904,7 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
   .immersive-view-controls svg { width: 20px; height: 20px; }
 
   /* Lyrics */
-  .lyrics-panel { height: var(--panel-height); min-width: 0; align-self: center; overflow: hidden; position: relative; margin-left: -14px; }
+  .lyrics-panel { height: var(--panel-height); min-width: 0; align-self: center; overflow: hidden; position: relative; margin-left: -14px; will-change: translate, opacity; }
   .lyrics-scroller { height: 100%; overflow: hidden auto; padding: 0 3.8% var(--lyric-bottom-space, 390px) 0; scrollbar-width: none; overscroll-behavior: contain; }.lyrics-scroller::-webkit-scrollbar { display: none; }
   .immersive-player[data-lyric-scale="auto"] { --lyric-font-size: var(--auto-lyric-font-size, 30px); }
   .immersive-player[data-lyric-scale="60"] { --lyric-font-size: 20px; }
@@ -1007,6 +1012,9 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
   /* Entrance choreography: artwork settles first, then the controls and the
      lyrics follow in a short cascade. */
   .immersive-player.open .cover-stage { animation: imm-cover-in .95s var(--imm-ease) .1s both; }
+  /* Allocate only these bounded entrance surfaces before the first reveal;
+     lyrics within the clipped panel keep their existing on-demand layers. */
+  :is(.immersive-meta, #immersiveProgress, .immersive-times, .immersive-controls, .immersive-view-controls) { will-change: translate, opacity; }
   .immersive-player.open :is(.immersive-meta, #immersiveProgress, .immersive-times, .immersive-controls, .immersive-view-controls) { animation: imm-rise .8s var(--imm-ease) both; }
   .immersive-player.open .immersive-meta { animation-delay: .18s; }
   .immersive-player.open #immersiveProgress { animation-delay: .23s; }

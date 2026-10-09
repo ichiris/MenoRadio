@@ -266,3 +266,163 @@ test('lyric motion keeps the visible spring trajectory and skips lines that neve
     assert.ok(r.animations.some((item) => item.index === index))
   }
 })
+
+function immersiveTransitionRenderer() {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const vm = require('node:vm')
+  const frames = [], idle = [], timers = []
+  const classList = () => {
+    const classes = new Set()
+    return { contains: (name) => classes.has(name), add: (...names) => names.forEach((name) => classes.add(name)), remove: (...names) => names.forEach((name) => classes.delete(name)), toggle: (name, on) => on ? classes.add(name) : classes.delete(name) }
+  }
+  const player = { classList: classList(), inert: true, setAttribute(name, value) { this[name] = value } }
+  let clock = 1000
+  const context = vm.createContext({
+    state: { current: { id: 1 }, audioLoadGeneration: 1, coverReadyGeneration: 1, lyricsReadyGeneration: 1, immersiveTransitionGeneration: 0, immersiveSurfaceRevision: 0, immersiveSurfacePrepared: false, immersiveSurfaceCooldownUntil: 0 },
+    dom: { immersive: player, app: { classList: classList() } },
+    document: { hidden: false, body: { classList: classList(), style: { setProperty(name, value) { this[name] = value }, removeProperty(name) { delete this[name] } } } },
+    window: { requestIdleCallback: (fn) => { idle.push(fn); return idle.length }, setTimeout: (fn, delay) => { timers.push({ fn, delay }); return timers.length } },
+    immersiveFontWarmupEnabled: true,
+    matchMedia: () => ({ matches: false }),
+    performance: { now: () => clock },
+    requestAnimationFrame: (fn) => frames.push(fn), clearTimeout() {},
+    applyImmersiveLayout() {}, syncFloatingLyrics() {}, syncLyricWords() {}, showImmersiveChrome() {},
+    setImmersiveView() {}, setImmersiveVolumePopover() {},
+    $: () => ({ classList: classList(), setAttribute() {} }),
+  })
+  const source = fs.readFileSync(path.join(__dirname, '../src/app.js'), 'utf8')
+  for (const name of ['syncImmersiveAppPresentation', 'afterImmersivePaints', 'warmImmersiveSurface', 'scheduleImmersiveSurfaceWarmup', 'commitImmersiveVisibility', 'openImmersive']) {
+    const fn = source.match(new RegExp('^function ' + name + '\\([^]*?^}', 'm'))
+    assert.ok(fn)
+    vm.runInContext(fn[0], context)
+  }
+  return {
+    context, player, idle, timers,
+    async frame() { clock += 16; frames.splice(0).forEach((fn) => fn(clock)); await Promise.resolve() },
+    async finish() { for (let index = 0; index < 6; index += 1) await this.frame() },
+  }
+}
+
+test('cold entrance starts after prepainting and resetting the closed surface; normal exit retains the page', async () => {
+  const r = immersiveTransitionRenderer()
+  r.context.openImmersive(true)
+  assert.equal(r.player.classList.contains('open'), false)
+  assert.equal(r.player.classList.contains('render-warming'), true)
+  assert.equal(r.player.inert, true)
+  await r.frame()
+  await r.frame()
+  assert.equal(r.player.classList.contains('render-warming'), true)
+  await r.frame()
+  assert.equal(r.player.classList.contains('render-warming'), false)
+  assert.equal(r.player.classList.contains('render-reset'), true)
+  await r.finish()
+  assert.equal(r.player.classList.contains('open'), true)
+  assert.equal(r.player.classList.contains('render-reset'), false)
+  assert.equal(r.player.inert, false)
+  assert.equal(r.player['aria-hidden'], 'false')
+  assert.equal(r.context.dom.app.classList.contains('immersive-receded'), true)
+  assert.equal(r.context.document.body.style['background-color'], '#0a0b0d')
+  assert.equal(r.timers.length, 0, 'Ordinary playback must not discard the underlying page')
+  r.context.openImmersive(false)
+  assert.equal(r.player.inert, true)
+  assert.equal(r.player.classList.contains('open'), false)
+  assert.equal(r.context.document.body.classList.contains('immersive-app-suspended'), false)
+  assert.equal(r.context.dom.app.classList.contains('immersive-receded'), false)
+  assert.equal(r.context.document.body.style['background-color'], undefined)
+})
+
+test('rapid open-close-open cannot commit an obsolete entrance or skip its reset', async () => {
+  const r = immersiveTransitionRenderer()
+  r.context.openImmersive(true)
+  r.context.openImmersive(false)
+  await r.finish()
+  assert.equal(r.player.classList.contains('open'), false)
+  r.context.state.immersiveSurfacePrepared = false
+  r.context.openImmersive(true)
+  r.context.openImmersive(false)
+  r.context.openImmersive(true)
+  assert.equal(r.player.classList.contains('open'), false)
+  await r.finish()
+  assert.equal(r.player.classList.contains('open'), true)
+  assert.equal(r.player.classList.contains('render-warming'), false)
+})
+
+test('an exit following live resize restores the underlying page before sliding away', async () => {
+  const r = immersiveTransitionRenderer()
+  r.context.state.immersiveSurfacePrepared = true
+  r.context.openImmersive(true)
+  r.context.document.body.classList.add('immersive-app-suspended')
+  r.context.openImmersive(false)
+  assert.equal(r.context.document.body.classList.contains('immersive-app-suspended'), false)
+  assert.equal(r.player.classList.contains('open'), true)
+  await r.finish()
+  assert.equal(r.player.classList.contains('open'), false)
+})
+
+test('prepainting is shared, invalidates changed artwork and does not interrupt exit', async () => {
+  const r = immersiveTransitionRenderer()
+  const first = r.context.warmImmersiveSurface()
+  assert.equal(first, r.context.warmImmersiveSurface())
+  r.context.scheduleImmersiveSurfaceWarmup()
+  await r.finish()
+  await first
+  assert.equal(r.context.state.immersiveSurfacePrepared, false)
+  assert.equal(r.idle.length, 1, 'Changed content must be prepainted again')
+  r.context.state.immersiveSurfaceCooldownUntil = 1660
+  r.context.scheduleImmersiveSurfaceWarmup(false)
+  assert.equal(r.player.classList.contains('render-warming'), false)
+})
+
+test('legacy player and reduced motion enter without prepainting delays', async () => {
+  for (const legacy of [true, false]) {
+    const r = immersiveTransitionRenderer()
+    r.context.state.legacyPlayer = legacy
+    if (!legacy) r.context.matchMedia = () => ({ matches: true })
+    r.context.openImmersive(true)
+    await Promise.resolve()
+    assert.equal(r.player.classList.contains('open'), true)
+    assert.equal(r.player.classList.contains('render-warming'), false)
+    assert.equal(r.context.dom.app.classList.contains('immersive-receded'), !legacy)
+  }
+})
+
+test('changing to legacy while open restores the main page presentation', async () => {
+  const r = immersiveTransitionRenderer()
+  r.context.state.immersiveSurfacePrepared = true
+  r.context.openImmersive(true)
+  r.context.state.legacyPlayer = true
+  r.context.syncImmersiveAppPresentation()
+  assert.equal(r.context.dom.app.classList.contains('immersive-receded'), false)
+  assert.equal(r.context.document.body.style['background-color'], undefined)
+})
+
+test('unsung words retain constant brightness through line fades without rewriting settled styles', () => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm')
+  const source = fs.readFileSync(path.join(__dirname, '../src/app.js'), 'utf8')
+  const values = new Map([['--lyric-opacity', '1']])
+  let fading = false, reads = 0, writes = 0
+  const context = vm.createContext({
+    lyricUnsungAlpha: .34,
+    lyricOpacityAnimating: () => fading,
+    getComputedStyle: () => { reads += 1; return { opacity: '.5' } },
+  })
+  vm.runInContext(source.match(/^function applyLyricWordRest\([^]*?^}/m)[0], context)
+  const line = { style: {
+    getPropertyValue: (name) => values.get(name) || '',
+    setProperty: (name, value) => { writes += 1; values.set(name, value) },
+  } }
+  context.applyLyricWordRest(line)
+  context.applyLyricWordRest(line)
+  assert.equal(reads, 0)
+  assert.equal(writes, 1)
+  assert.equal(values.get('--word-rest'), '0.340')
+  fading = true
+  context.applyLyricWordRest(line)
+  assert.equal(reads, 1)
+  assert.equal(values.get('--word-rest'), '0.680', 'Live opacity still compensates unsung brightness during fades')
+  fading = false
+  values.set('--lyric-opacity', '.34')
+  context.applyLyricWordRest(line)
+  assert.equal(values.get('--word-rest'), '1.000')
+})
