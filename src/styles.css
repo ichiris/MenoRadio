@@ -917,6 +917,17 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
     color: #e2e4ea; opacity: var(--lyric-opacity, .22); font-size: var(--lyric-font-size, 34px);
     transform-origin: left center; cursor: pointer;
   }
+  /* Keep measured line geometry, but let Chromium skip the distant glyphs and
+     blur surfaces. The clip margin preserves italic overhang and word lifts;
+     the scroller still supplies the existing viewport clip. */
+  .lyrics-scroller.lyrics-contained .lyric-line {
+    content-visibility: auto;
+    contain-intrinsic-block-size: var(--lyric-cached-height);
+    overflow-clip-margin: 64px;
+  }
+  /* Preserve visible lines' glyph smoothing and blur sampling. */
+  .lyrics-scroller.lyrics-contained .lyric-line:is(.active, .lyric-nearby) { content-visibility: visible; }
+  .lyrics-scroller.lyrics-measuring .lyric-content { transform: none !important; }
   /* WAAPI promotes the moving lines. Permanently promoting the entire song
      would allocate hundreds of layers when the player first becomes visible. */
   .lyric-content { width: 96.3%; transform: scale(var(--lyric-scale, 1)); transform-origin: left center; filter: blur(var(--lyric-blur, 0px)) brightness(1); transition: filter 1.1s ease; }

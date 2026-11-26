@@ -337,6 +337,7 @@ const state = {
   immersiveTransitionGeneration: 0,
   immersiveSurfaceRevision: 0,
   immersiveSurfacePrepared: false,
+  immersiveLyricObserver: null,
   immersiveSurfacePromise: null,
   immersiveSurfaceIdle: 0,
   immersiveSurfaceTimer: 0,
@@ -455,6 +456,7 @@ function applyTheme() {
 applyTheme()
 
 function applyDisplaySettings() {
+  invalidateImmersiveLyricContainment()
   const legacyName = legacyFontNames[String(state.fontFamily || '').toLowerCase()]
   if (legacyName) {
     state.fontFamily = legacyName
@@ -472,7 +474,10 @@ function applyDisplaySettings() {
   document.documentElement.style.setProperty('--font', fontCss(state.fontFamily))
   const fontFamily = state.fontFamily
   void ensureLocalFont(fontFamily).then((loaded) => {
-    if (loaded && state.fontFamily === fontFamily) scheduleImmersiveLyricLayoutSettle()
+    if (loaded && state.fontFamily === fontFamily) {
+      invalidateImmersiveLyricContainment()
+      scheduleImmersiveLyricLayoutSettle()
+    }
   })
   scheduleImmersiveFontWarmup()
   dom.immersive.dataset.lyricScale = state.lyricScale
@@ -485,6 +490,7 @@ function applyDisplaySettings() {
 }
 
 function applyPlayerStyleSettings() {
+  if (state.legacyPlayer) invalidateImmersiveLyricContainment()
   if (state.legacyPlayer) document.documentElement.dataset.playerStyle = 'legacy'
   else delete document.documentElement.dataset.playerStyle
   dom.immersive.classList.toggle('depth-blur-off', !state.depthBlur)
@@ -3260,6 +3266,7 @@ async function fetchLyrics(track, generation = state.audioLoadGeneration) {
 }
 
 function renderLyrics(lines, status = 'ready') {
+  invalidateImmersiveLyricContainment()
   state.activeLyric = -1
   state.focusLyric = 0
   state.manualLyricReadable = false
@@ -3290,6 +3297,7 @@ function renderLyrics(lines, status = 'ready') {
 }
 
 function updateLyricVisibility() {
+  invalidateImmersiveLyricContainment()
   $$('.translation', dom.lyricsScroller).forEach((line) => line.hidden = !state.showTranslation)
   $('#translationToggle').classList.toggle('active', state.showTranslation)
   syncFloatingLyrics(true)
@@ -4511,6 +4519,7 @@ function scheduleImmersiveFontWarmup() {
       .then(() => document.fonts.load(`740 32px ${fontCss(fontFamily)}`, sample))
       .then(() => document.fonts.load(`520 24px ${fontCss(fontFamily)}`, sample))
       .then(() => {
+        invalidateImmersiveLyricContainment()
         if (state.fontFamily === fontFamily && !dom.immersive.classList.contains('open')) {
           updateLyricScrollFocus(state.focusLyric, state.activeLyric, state.activeLyric, true, true)
         }
@@ -4528,6 +4537,7 @@ function applyImmersiveLayout(immediate = false) {
   const height = window.innerHeight
   const signature = `${width}:${height}:${state.lyricScale}:${state.legacyPlayer}`
   if (state.immersiveLayoutSignature === signature) return
+  invalidateImmersiveLyricContainment()
   state.immersiveLayoutSignature = signature
   const clamp = (minimum, value, maximum) => Math.max(minimum, Math.min(maximum, value))
   const cover = Math.round(clamp(288, Math.min((height - 100) * .48, width * .32), 700))
@@ -4614,6 +4624,59 @@ function afterImmersivePaints(callback, frames = 2) {
   })
 }
 
+function invalidateImmersiveLyricContainment() {
+  state.immersiveLyricObserver?.disconnect()
+  state.immersiveLyricObserver = null
+  dom.lyricsScroller.classList.remove('lyrics-contained')
+}
+
+function prepareImmersiveLyricContainment() {
+  if (state.legacyPlayer || dom.lyricsScroller.classList.contains('lyrics-contained')
+    || !CSS.supports('content-visibility', 'auto')
+    || !CSS.supports('contain-intrinsic-block-size', '1px')
+    || typeof IntersectionObserver !== 'function') return
+  // A font swap or responsive layout transition can still change wrapping.
+  // Keep normal layout until a later preparation sees stable geometry.
+  if (document.fonts?.status === 'loading') return
+  const content = $('.immersive-content', dom.immersive)
+  if (content?.getAnimations().some((animation) => animation.playState === 'running' || animation.playState === 'pending')) return
+  const lines = $$('.lyric-line', dom.lyricsScroller)
+  if (!lines.length) return
+  // Measure the natural content before enabling containment. Exact, fractional
+  // heights preserve wrapping, translations and every scroll offset while the
+  // browser skips painting/style work inside off-screen lines during entrance.
+  // Computed height strings round fractional pixels; across a long song that
+  // can shift the later lines. Read unscaled rectangles in one batch instead.
+  // This temporary rule is removed synchronously, before the next paint.
+  dom.lyricsScroller.classList.add('lyrics-measuring')
+  let heights
+  const nearby = []
+  try {
+    const viewport = dom.lyricsScroller.getBoundingClientRect()
+    heights = lines.map((line) => {
+      const bounds = line.getBoundingClientRect()
+      nearby.push(bounds.bottom >= viewport.top - 800 && bounds.top <= viewport.bottom + 800)
+      return $('.lyric-content', line).getBoundingClientRect().height
+    })
+  } finally {
+    dom.lyricsScroller.classList.remove('lyrics-measuring')
+  }
+  if (document.fonts?.status === 'loading' || heights.some((height) => !Number.isFinite(height) || height <= 0)) return
+  lines.forEach((line, index) => {
+    line.style.setProperty('--lyric-cached-height', `${heights[index]}px`)
+    line.classList.toggle('lyric-nearby', nearby[index])
+  })
+  // Visible/approaching lines keep their original paint context, including
+  // the blur's sampling. Only distant lines need content-visibility containment.
+  const observer = new IntersectionObserver((entries) => {
+    if (state.immersiveLyricObserver !== observer) return
+    entries.forEach((entry) => entry.target.classList.toggle('lyric-nearby', entry.isIntersecting))
+  }, { root: dom.lyricsScroller, rootMargin: '800px 0px' })
+  state.immersiveLyricObserver = observer
+  lines.forEach((line) => observer.observe(line))
+  dom.lyricsScroller.classList.add('lyrics-contained')
+}
+
 function warmImmersiveSurface() {
   if (state.legacyPlayer || matchMedia('(prefers-reduced-motion: reduce)').matches
     || state.immersiveSurfacePrepared || dom.immersive.classList.contains('open')
@@ -4621,6 +4684,7 @@ function warmImmersiveSurface() {
   if (state.immersiveSurfacePromise) return state.immersiveSurfacePromise
   const revision = state.immersiveSurfaceRevision
   applyImmersiveLayout(true)
+  prepareImmersiveLyricContainment()
   // visibility:hidden/off-screen elements do not rasterize. Two real paint
   // opportunities at imperceptible opacity prime the exact background, grain,
   // artwork, glyphs and compositor surfaces before the entrance starts.
@@ -4673,7 +4737,10 @@ function scheduleImmersiveSurfaceWarmup(invalidate = true) {
 
 function commitImmersiveVisibility(open) {
   const wasOpen = dom.immersive.classList.contains('open')
-  if (open) applyImmersiveLayout(true)
+  if (open) {
+    applyImmersiveLayout(true)
+    prepareImmersiveLyricContainment()
+  }
   dom.immersive.classList.toggle('open', open)
   syncImmersiveAppPresentation()
   dom.immersive.inert = !open

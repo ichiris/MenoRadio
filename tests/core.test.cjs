@@ -287,7 +287,7 @@ function immersiveTransitionRenderer() {
     matchMedia: () => ({ matches: false }),
     performance: { now: () => clock },
     requestAnimationFrame: (fn) => frames.push(fn), clearTimeout() {},
-    applyImmersiveLayout() {}, syncFloatingLyrics() {}, syncLyricWords() {}, showImmersiveChrome() {},
+    applyImmersiveLayout() {}, prepareImmersiveLyricContainment() {}, syncFloatingLyrics() {}, syncLyricWords() {}, showImmersiveChrome() {},
     setImmersiveView() {}, setImmersiveVolumePopover() {},
     $: () => ({ classList: classList(), setAttribute() {} }),
   })
@@ -425,4 +425,74 @@ test('unsung words retain constant brightness through line fades without rewriti
   values.set('--lyric-opacity', '.34')
   context.applyLyricWordRest(line)
   assert.equal(values.get('--word-rest'), '1.000')
+})
+
+test('lyric containment measures fractional heights before writes and refreshes after invalidation', () => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm')
+  const source = fs.readFileSync(path.join(__dirname, '../src/app.js'), 'utf8')
+  const events = [], classes = new Set()
+  const nearbyFlags = []
+  const heights = [65.21875, 102.40625]
+  const lines = heights.map((height, index) => ({
+    content: { index, getBoundingClientRect() { events.push(['read', index]); return { height: heights[index] } } },
+    classList: { toggle(name, on) { nearbyFlags[index] = on } },
+    getBoundingClientRect: () => ({ top: index * 2000, bottom: index * 2000 + 100 }),
+    style: { setProperty: (name, value) => events.push(['write', index, name, value]) },
+  }))
+  const scroller = { getBoundingClientRect: () => ({ top: 0, bottom: 500 }), classList: {
+    contains: (name) => classes.has(name),
+    add: (name) => classes.add(name), remove: (name) => classes.delete(name),
+  } }
+  let layoutRunning = false, supported = true
+  const observers = []
+  const context = vm.createContext({
+    state: { legacyPlayer: false }, dom: { lyricsScroller: scroller },
+    document: { fonts: { status: 'loaded' } },
+    CSS: { supports: () => supported },
+    IntersectionObserver: function (callback, options) {
+      this.callback = callback
+      this.options = options
+      this.targets = []
+      this.observe = (line) => this.targets.push(line)
+      this.disconnect = () => { this.disconnected = true }
+      observers.push(this)
+    },
+    $: (selector, line) => selector === '.immersive-content' ? { getAnimations: () => layoutRunning ? [{ playState: 'running' }] : [] } : line.content,
+    $$: () => lines,
+  })
+  for (const name of ['invalidateImmersiveLyricContainment', 'prepareImmersiveLyricContainment']) {
+    vm.runInContext(source.match(new RegExp('^function ' + name + '\\([^]*?^}', 'm'))[0], context)
+  }
+  context.prepareImmersiveLyricContainment()
+  assert.deepEqual(events, [
+    ['read', 0], ['read', 1],
+    ['write', 0, '--lyric-cached-height', '65.21875px'],
+    ['write', 1, '--lyric-cached-height', '102.40625px'],
+  ])
+  assert.equal(observers[0].options.root, scroller)
+  assert.equal(observers[0].targets.length, 2)
+  assert.deepEqual(nearbyFlags, [true, false])
+  observers[0].callback([{ target: lines[1], isIntersecting: true }])
+  assert.equal(nearbyFlags[1], true, 'Approaching lines regain their original paint context')
+  context.prepareImmersiveLyricContainment()
+  assert.equal(events.length, 4, 'Repeated entrance reuses stable geometry')
+  context.invalidateImmersiveLyricContainment()
+  assert.equal(observers[0].disconnected, true)
+  assert.equal(classes.has('lyrics-contained'), false)
+  events.length = 0
+  heights[0] = 88.40625
+  context.prepareImmersiveLyricContainment()
+  assert.equal(events[2][3], '88.40625px', 'Font/translation/wrap changes must use fresh heights')
+  observers[0].callback([{ target: lines[1], isIntersecting: true }])
+  assert.equal(nearbyFlags[1], false, 'Queued callbacks from an invalidated observer cannot affect a new preparation')
+  for (const condition of ['legacy', 'fonts', 'layout', 'unsupported', 'unmeasured']) {
+    context.invalidateImmersiveLyricContainment()
+    context.state.legacyPlayer = condition === 'legacy'
+    context.document.fonts.status = condition === 'fonts' ? 'loading' : 'loaded'
+    layoutRunning = condition === 'layout'
+    supported = condition !== 'unsupported'
+    heights[0] = condition === 'unmeasured' ? 0 : 65.21875
+    context.prepareImmersiveLyricContainment()
+    assert.equal(classes.has('lyrics-contained'), false, condition)
+  }
 })
