@@ -10,7 +10,7 @@ function ignoreClosedOutputPipe(stream) {
 ignoreClosedOutputPipe(process.stdout)
 ignoreClosedOutputPipe(process.stderr)
 
-const { app, BrowserWindow, ipcMain, safeStorage, shell, nativeTheme, session, screen, net, protocol } = require('electron')
+const { app, BrowserWindow, clipboard, ipcMain, safeStorage, shell, nativeTheme, session, screen, net, protocol } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const crypto = require('node:crypto')
@@ -1585,6 +1585,10 @@ function registerWindowIpc() {
   })
   ipcMain.handle('window:step-zoom', (_event, direction) => stepMainWindowZoom(direction))
   ipcMain.handle('app:version', () => app.getVersion())
+  ipcMain.handle('clipboard:write-text', (_event, value) => {
+    if (typeof value !== 'string' || !value.trim()) throw new Error('没有可复制的文字')
+    clipboard.writeText(value)
+  })
   ipcMain.handle('app:check-update', () => getLatestGithubRelease())
   ipcMain.handle('app:third-party-notices', () => fs.readFileSync(path.join(__dirname, '..', 'THIRD_PARTY_NOTICES.md'), 'utf8'))
   ipcMain.handle('app:cache-size', () => session.defaultSession.getCacheSize())
@@ -1871,6 +1875,23 @@ function registerDataIpc() {
   ipcMain.handle('data:user-detail', (_event, uid) => guarded(async () => {
     try { return await callApi('user_detail_new', { uid: String(uid) }) }
     catch { return callApi('user_detail', { uid: String(uid) }) }
+  }))
+
+  ipcMain.handle('data:user-connections', (_event, payload) => guarded(async () => {
+    const uid = String(payload?.uid || '')
+    const kind = payload?.kind
+    const offset = Number(payload?.offset ?? 0)
+    if (!/^\d+$/.test(uid) || !['follows', 'followers'].includes(kind) || !Number.isSafeInteger(offset) || offset < 0) {
+      throw new Error('用户列表参数无效')
+    }
+    const limit = 30
+    const following = kind === 'follows'
+    const body = await callApi(following ? 'user_follows' : 'user_followeds', { uid, offset, limit })
+    const users = following ? body?.follow : body?.followeds
+    if (Number(body?.code ?? 200) !== 200 || !Array.isArray(users)) {
+      throw new Error(body?.message || body?.msg || '暂时无法查看此列表')
+    }
+    return { users, limit, more: users.length > 0 && (body.more == null ? users.length >= limit : body.more === true) }
   }))
 
   ipcMain.handle('data:playlist', (_event, id) => guarded(() =>

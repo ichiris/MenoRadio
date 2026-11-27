@@ -706,10 +706,12 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
 @keyframes imm-icon-pop { 0% { scale: .6; opacity: 0; } 60% { scale: 1.08; opacity: 1; } 100% { scale: 1; } }
 @keyframes imm-heart-pop { 0% { scale: .7; } 45% { scale: 1.28; } 70% { scale: .94; } 100% { scale: 1; } }
 
+.immersive-backdrops { position: absolute; z-index: 0; inset: 0; pointer-events: none; }
+.immersive-backdrop.foreground { z-index: 1; }
+
 :root:not([data-player-style="legacy"]) {
   .immersive-player {
     --imm-ease: cubic-bezier(.16, 1, .3, 1);
-    --imm-ease-soft: cubic-bezier(.22, .72, .18, 1);
     --imm-glass: rgba(255, 255, 255, .1);
     --imm-glass-hover: rgba(255, 255, 255, .15);
     --imm-glass-line: rgba(255, 255, 255, .14);
@@ -737,10 +739,9 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
      transforms animate here. Two masked copies orbit in opposite directions to
      produce slowly folding colour fields. */
   .immersive-backdrop {
-    position: absolute; z-index: 0; inset: -8%; opacity: 0;
+    position: absolute; inset: -8%; opacity: 0;
     background-image: var(--cover); background-size: cover; background-position: center; background-repeat: no-repeat;
     transform: scale(1.12);
-    transition: opacity 1.3s var(--imm-ease-soft);
     animation: backdrop-breathe 26s ease-in-out infinite alternate;
     backface-visibility: hidden;
   }
@@ -999,9 +1000,6 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
   #likeButton.active svg, #immersiveLike.active svg, .playlist-actions .secondary-button.active svg { fill: currentColor; }
 
   .player-bar.radio-mode #previousButton, .player-bar.radio-mode #playModeButton, .immersive-player.radio-mode #immersivePrevious, .immersive-player.radio-mode #immersiveModeButton { display: none; }
-  .immersive-player.radio-mode .immersive-controls { justify-content: center; gap: clamp(56px, 7vw, 105px); }
-  .immersive-player.radio-mode.fullscreen .immersive-controls { justify-content: space-between; gap: 0; }
-  .immersive-player.radio-mode .immersive-volume-control { order: 1; }.immersive-player.radio-mode #immersivePlay { order: 2; }.immersive-player.radio-mode [data-player-action="next"] { order: 3; }
 
   /* Lyric size menu */
   .font-size-control { position: relative; }
@@ -1059,7 +1057,7 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
     overflow: hidden; background: #171a1d; color: rgba(255,255,255,.92); -webkit-app-region: no-drag; contain: layout paint style;
   }
   .immersive-player.open { visibility: visible; transform: translateY(0); transition-delay: 0s; }
-  .immersive-backdrop { position: absolute; z-index: 0; inset: -24%; opacity: 0; background-image: var(--cover); background-size: cover; background-position: center; filter: blur(165px) saturate(1.01) brightness(.882) contrast(.98); transform: scale(1.17); transition: opacity .86s cubic-bezier(.22,.72,.18,1); will-change: opacity, transform; backface-visibility: hidden; }
+  .immersive-backdrop { position: absolute; inset: -24%; opacity: 0; background-image: var(--cover); background-size: cover; background-position: center; filter: blur(165px) saturate(1.01) brightness(.882) contrast(.98); transform: scale(1.17); will-change: opacity, transform; backface-visibility: hidden; }
   .immersive-backdrop.active { opacity: 1; }
   .immersive-player::before { content: ""; position: absolute; z-index: 1; inset: 0; pointer-events: none; background: linear-gradient(90deg, rgba(14,18,15,var(--backdrop-veil-left,.16)), rgba(14,18,16,var(--backdrop-veil-mid,.20)) 52%, rgba(12,16,14,var(--backdrop-veil-right,.24))); transition: background .45s ease; }
   .immersive-header { position: absolute; z-index: 8; inset: 0 0 auto; height: 74px; padding: 0; color: rgba(255,255,255,.82); -webkit-app-region: drag; }
@@ -1128,9 +1126,6 @@ input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus::-web
   #likeButton.active svg, #immersiveLike.active svg, .playlist-actions .secondary-button.active svg { fill: currentColor; }
 
   .player-bar.radio-mode #previousButton, .player-bar.radio-mode #playModeButton, .immersive-player.radio-mode #immersivePrevious, .immersive-player.radio-mode #immersiveModeButton { display: none; }
-  .immersive-player.radio-mode .immersive-controls { justify-content: center; gap: clamp(56px, 7vw, 105px); }
-  .immersive-player.radio-mode.fullscreen .immersive-controls { justify-content: space-between; gap: 0; }
-  .immersive-player.radio-mode .immersive-volume-control { order: 1; }.immersive-player.radio-mode #immersivePlay { order: 2; }.immersive-player.radio-mode [data-player-action="next"] { order: 3; }
   .font-size-control { position: relative; }.font-size-menu { position: absolute; right: 0; bottom: 48px; width: 232px; padding: 9px; border: 1px solid rgba(255,255,255,.14); border-radius: 9px; background: rgba(30,33,37,.95); box-shadow: 0 14px 38px rgba(0,0,0,.28); backdrop-filter: blur(24px); display: grid; gap: 7px; visibility: hidden; opacity: 0; transform: translateY(6px); transition: opacity .18s ease, transform .18s ease, visibility 0s .18s; }.font-size-menu.open { visibility: visible; opacity: 1; transform: none; transition-delay: 0s; }.font-size-menu label { padding: 2px 3px 0; color: rgba(255,255,255,.88); font-size: 12px; }.font-size-menu .choice-picker-list { max-height: 286px; }.font-size-menu .choice-option { color: rgba(255,255,255,.74); }.font-size-menu .choice-option.active { color: #303740; background: rgba(255,255,255,.94); }.font-size-menu .choice-option small { color: currentColor; opacity: .58; }
   /* Markup added for the current player, neutralised for the legacy one. */
   .cover-stage { display: contents; }
@@ -1202,9 +1197,23 @@ html.drag-forbidden body { cursor: not-allowed !important; }
 .track-menu { position: fixed; z-index: 110; width: 244px; max-height: min(470px, calc(100vh - 20px)); padding: 7px; overflow: hidden auto; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--popover-bg); box-shadow: 0 20px 58px rgba(0,0,0,.42); backdrop-filter: blur(25px); opacity: 0; visibility: hidden; transform: translateY(-5px) scale(.985); transform-origin: top right; transition: opacity .14s ease, transform .14s ease, visibility 0s .14s; }
 .track-menu.open { opacity: 1; visibility: visible; transform: none; transition-delay: 0s; }
 .track-menu-title { padding: 7px 10px 9px; color: var(--text-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.track-menu > button:disabled { opacity: .5; background: transparent; color: var(--text-soft); }
+.user-stats button { display: inline-flex; align-items: baseline; gap: 7px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; }
+.user-stats button:hover { color: var(--accent-strong); text-decoration: underline; text-underline-offset: 4px; }
+.user-connections-pagination { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+
+/* Match the outer buttons to the centers of the lower view controls. */
+:root .immersive-player.radio-mode .immersive-volume-control { order: 1; }
+:root .immersive-player.radio-mode #immersivePlay { order: 2; }
+:root .immersive-player.radio-mode .immersive-controls [data-player-action="next"] { order: 3; }
+:root .immersive-player.radio-mode :is(#immersiveVolume, .immersive-controls [data-player-action="next"]) { width: 44px; }
+:root .immersive-player.radio-mode .immersive-volume-popover { left: 0; right: auto; transform-origin: 10% 100%; }
+:root .immersive-player.radio-mode .immersive-volume-popover::after { left: 0; right: auto; }
+:root #immersiveArtist .creator-link:hover { color: #fff; }
 .track-menu > button, .track-menu-playlists button { width: 100%; min-height: 38px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text-soft); display: flex; align-items: center; gap: 10px; text-align: left; }
 .track-menu > button:hover, .track-menu-playlists button:hover { background: rgba(255,255,255,.075); color: white; }.track-menu > button svg { width: 17px; height: 17px; flex: 0 0 auto; }.track-menu > button span { flex: 1; }.track-menu > button small { font-size: 17px; color: var(--text-muted); }
 .track-menu > button.danger { color: #e99a9f; }.track-menu-separator { height: 1px; margin: 6px 3px; background: var(--line); }
+.track-menu > button.track-menu-title { display: block; min-height: 0; padding: 7px 10px 9px; color: var(--text-muted); }
 .track-menu-playlists { max-height: 210px; margin: 3px 0 5px 28px; padding-left: 5px; overflow: hidden auto; border-left: 1px solid var(--line); }.track-menu-playlists[hidden] { display: none; }.track-menu-playlists button { min-height: 34px; font-size: 12px; }.track-menu-playlists span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .modal-layer { position: fixed; z-index: 120; inset: 0; display: grid; place-items: center; background: rgba(6,6,8,.55); backdrop-filter: blur(12px); visibility: hidden; opacity: 0; transition: .2s; }
@@ -1261,6 +1270,7 @@ html.drag-forbidden body { cursor: not-allowed !important; }
 .track-menu > button:hover,
 .track-menu-playlists button:hover,
 .zoom-controls button:hover { background: var(--control-hover); color: var(--text); }
+.track-menu > button.track-menu-title:is(:hover, :focus-visible) { background: transparent; color: var(--text); }
 .queue-item:hover { background: var(--control-bg); }
 .login-field input,
 .login-field textarea,

@@ -135,8 +135,10 @@
   </div>
 
   <section id="immersivePlayer" class="immersive-player paused" aria-hidden="true" data-lyric-scale="auto">
-    <div id="immersiveBackdrop" class="immersive-backdrop active"></div>
-    <div id="immersiveBackdropNext" class="immersive-backdrop"></div>
+    <div class="immersive-backdrops" aria-hidden="true">
+      <div id="immersiveBackdrop" class="immersive-backdrop active"></div>
+      <div id="immersiveBackdropNext" class="immersive-backdrop"></div>
+    </div>
     <div class="immersive-grain" aria-hidden="true"></div>
     <header class="immersive-header">
       <button id="closeImmersive" class="immersive-dismiss" aria-label="返回播放列表"><svg><use href="#i-chevron"/></svg></button>

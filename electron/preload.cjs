@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 const invoke = (channel, payload) => ipcRenderer.invoke(channel, payload)
 
 contextBridge.exposeInMainWorld('menoradio', {
+  clipboard: { writeText: (value) => invoke('clipboard:write-text', value) },
   window: {
     minimize: () => invoke('window:minimize'),
     maximize: () => invoke('window:maximize'),
@@ -41,6 +42,7 @@ contextBridge.exposeInMainWorld('menoradio', {
     home: () => invoke('data:home'),
     userPlaylists: (uid) => invoke('data:user-playlists', uid),
     userDetail: (uid) => invoke('data:user-detail', uid),
+    userConnections: (uid, kind, offset = 0) => invoke('data:user-connections', { uid, kind, offset }),
     playlist: (id) => invoke('data:playlist', id),
     artist: (id, limit = 100) => invoke('data:artist', { id, limit }),
     artistSongs: (id, offset = 0, limit = 100) => invoke('data:artist-songs', { id, offset, limit }),

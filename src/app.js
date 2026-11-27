@@ -240,6 +240,7 @@ const state = {
   lyricsLoading: false,
   lyricsReadyGeneration: 0,
   coverReadyGeneration: 0,
+  currentCoverUpgrade: null,
   currentCoverLoadTimer: 0,
   playingGeneration: 0,
   upcomingPreloadSignature: '',
@@ -320,7 +321,7 @@ const state = {
   backdropGeneration: 0,
   backdropUrl: '',
   backdropLayer: 0,
-  backdropTransitionTimer: 0,
+  backdropFade: null,
   likePending: new Set(),
   accountRetryTimer: 0,
   menuTrack: null,
@@ -520,10 +521,9 @@ function refreshPlayerStyle({ lyrics = false, backdrop = false } = {}) {
     }
     renderLyrics(state.lyrics, state.lyrics.length ? 'ready' : state.lyricsLoading ? 'loading' : 'empty')
   }
-  const cover = $('#immersiveCover')
-  if (backdrop && cover?.src) {
+  if (backdrop && state.current) {
     state.backdropUrl = ''
-    updateImmersiveBackdrop(cover.src, cover.complete ? cover : null)
+    updatePlaybackBackdrop(state.current)
   }
 }
 
@@ -761,7 +761,7 @@ function scheduleCurrentPlaybackCover(generation = state.audioLoadGeneration) {
       const immersiveCover = $('#immersiveCover')
       immersiveCover.crossOrigin = 'anonymous'
       immersiveCover.src = highResolutionCover
-      updateImmersiveBackdrop(highResolutionCover, image)
+      state.currentCoverUpgrade = { generation, url: highResolutionCover }
       state.coverReadyGeneration = generation
       maybePreloadUpcomingCovers()
     })
@@ -1281,7 +1281,10 @@ async function renderLiked() {
 async function renderUser(payload) {
   const uid = String(payload?.uid || '')
   const name = payload?.name || '网易云用户'
+  state.pageTracks = []
   skeletonPage()
+  const loadingPage = dom.page.firstElementChild
+  const isCurrent = () => state.route === 'user' && state.routePayload === payload && dom.page.firstElementChild === loadingPage
   try {
     const [detailResult, playlistsResult] = await Promise.all([
       bridge.data.userDetail(uid),
@@ -1289,7 +1292,7 @@ async function renderUser(payload) {
     ])
     const detail = detailResult?.ok ? detailResult.data : {}
     const body = unwrap(playlistsResult)
-    if (state.route !== 'user' || String(state.routePayload?.uid || '') !== uid) return
+    if (!isCurrent()) return
     const profile = detail.profile || detail.data?.profile || {}
     const playlists = (body.playlist || []).map(normalizePlaylist)
     const createdPlaylists = playlists.filter((playlist) => String(playlist.creatorId) === uid)
@@ -1303,7 +1306,11 @@ async function renderUser(payload) {
       <section class="user-hero">
         <img class="user-avatar" src="${attr(avatar)}" alt="${attr(nickname)}">
         <div class="user-profile-copy"><span class="eyebrow">网易云音乐用户</span><h1>${escapeHtml(nickname)}</h1><p>${escapeHtml(signature)}</p>
-          <div class="user-stats"><span><strong>${formatCount(follows)}</strong> 关注</span><span><strong>${formatCount(followers)}</strong> 粉丝</span><span><strong>${playlists.length}</strong> 可见歌单</span></div>
+          <div class="user-stats">
+            <button type="button" data-user-connections="follows" data-profile-id="${attr(uid)}" data-profile-name="${attr(nickname)}"><strong>${formatCount(follows)}</strong> 关注</button>
+            <button type="button" data-user-connections="followers" data-profile-id="${attr(uid)}" data-profile-name="${attr(nickname)}"><strong>${formatCount(followers)}</strong> 粉丝</button>
+            <span><strong>${playlists.length}</strong> 可见歌单</span>
+          </div>
         </div>
       </section>
       <div class="section-title"><h2>创建的歌单 · ${createdPlaylists.length}</h2></div>
@@ -1312,7 +1319,35 @@ async function renderUser(payload) {
       ${collectedPlaylists.length ? renderCards(collectedPlaylists) : '<div class="user-playlist-empty">没有可见的收藏歌单</div>'}
     </div>`
   } catch (error) {
-    if (state.route === 'user') renderError('用户主页加载失败', error.message, () => renderUser(payload))
+    if (isCurrent()) renderError('用户主页加载失败', error.message, () => renderUser(payload))
+  }
+}
+
+async function renderUserConnections(payload) {
+  const { uid, name, kind, offset = 0 } = payload
+  const label = kind === 'follows' ? '关注' : '粉丝'
+  const title = `${name}的${label}`
+  state.pageTracks = []
+  skeletonPage()
+  const loadingPage = dom.page.firstElementChild
+  const isCurrent = () => state.route === 'user-connections' && state.routePayload === payload && dom.page.firstElementChild === loadingPage
+  try {
+    const { users, more, limit } = unwrap(await bridge.data.userConnections(uid, kind, offset))
+    if (!isCurrent()) return
+    const profiles = users.filter((user) => /^\d+$/.test(String(user?.userId ?? '')))
+    const profileLink = `<button type="button" class="secondary-button" data-user-id="${attr(uid)}" data-user-name="${attr(name)}">查看主页</button>`
+    dom.page.innerHTML = `<div class="page-inner user-page">
+      ${pageTitle(title, '', profileLink)}
+      ${profiles.length ? searchEntities(profiles, 'users', false) : `<div class="user-playlist-empty">暂无可见的${label}</div>`}
+      <div class="user-connections-pagination">
+        ${offset > 0 ? `<button type="button" class="secondary-button" data-connections-offset="${Math.max(0, offset - limit)}">上一页</button>` : ''}
+        ${more ? `<button type="button" class="secondary-button" data-connections-offset="${offset + limit}">下一页</button>` : ''}
+      </div>
+    </div>`
+  } catch (error) {
+    if (isCurrent()) {
+      renderError(`${label}加载失败`, error.message, () => renderUserConnections(payload))
+    }
   }
 }
 
@@ -1349,10 +1384,10 @@ function searchHistoryMarkup() {
   </section>`
 }
 
-function searchEntities(items, kind) {
+function searchEntities(items, kind, showHeading = true) {
   if (!items.length) return ''
   const labels = { artists: '歌手', albums: '专辑', playlists: '歌单', users: '用户' }
-  return `<section class="search-entity-section"><div class="section-title"><h2>${labels[kind]} · ${items.length}</h2></div><div class="search-entity-grid">${items.slice(0, 30).map((item) => {
+  return `<section class="search-entity-section">${showHeading ? `<div class="section-title"><h2>${labels[kind]} · ${items.length}</h2></div>` : ''}<div class="search-entity-grid">${items.slice(0, 30).map((item) => {
     const name = item.name || item.nickname || '未命名'
     const cover = imageOf(item, name)
     const subtitle = kind === 'playlists' ? (item.creator?.nickname || `${Number(item.trackCount || 0)} 首`) : kind === 'albums' ? artistOf(item) : kind === 'artists' ? `${Number(item.musicSize || 0)} 首歌曲` : (item.signature || '网易云音乐用户')
@@ -1687,7 +1722,7 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.16.0-preview'
+  const version = '0.17.0'
   dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
     <div class="settings-grid">
       <h2 class="settings-section-label">账户</h2>
@@ -1862,6 +1897,7 @@ async function renderRoute() {
     case 'artist': return renderArtist(state.routePayload)
     case 'album': return renderAlbum(state.routePayload)
     case 'user': return renderUser(state.routePayload)
+    case 'user-connections': return renderUserConnections(state.routePayload)
     case 'recent':
       dom.page.innerHTML = `<div class="page-inner">${pageTitle('最近播放', state.recent.length ? `最近听过的 ${state.recent.length} 首歌` : '还没有播放记录', state.recent.length ? '<button type="button" class="secondary-button" data-clear-recent>清空</button>' : '')}${renderTrackTable(state.recent, { emptyDescription: '播放过的歌曲会出现在这里。' })}</div>`
       return
@@ -2825,10 +2861,12 @@ function updateNowPlaying(options = {}) {
     return
   }
   const passive = Boolean(options.passive)
-  const cover = state.mediaLoadingOptimization
+  const generation = state.audioLoadGeneration
+  const upgrade = state.currentCoverUpgrade
+  const initialCover = state.mediaLoadingOptimization
     ? sizedImageUrl(track.cover, passive ? thumbnailPixelSize(64) : 512)
     : playbackCoverUrl(track.cover)
-  const generation = state.audioLoadGeneration
+  const cover = upgrade?.generation === generation ? upgrade.url : initialCover
   if (!passive && !state.mediaLoadingOptimization) state.coverReadyGeneration = generation
   dom.nowCover.textContent = ''
   dom.nowCover.style.backgroundImage = `url("${cover.replace(/["\\]/g, '')}")`
@@ -2844,9 +2882,15 @@ function updateNowPlaying(options = {}) {
   immersiveCover.src = cover
   $('#immersiveTitle').textContent = track.name
   $('#immersiveTitle').title = track.name
-  $('#immersiveArtist').textContent = track.artist
+  const artistLine = $('#immersiveArtist')
+  const artists = artistsOfTrack(track).filter((artist) => Number(artist.id) > 0)
+  if (artists.length) {
+    artistLine.innerHTML = artists.map((artist) =>
+      `<button type="button" class="creator-link" data-artist-id="${attr(artist.id)}" data-artist-name="${attr(artist.name)}">${escapeHtml(artist.name)}</button>`
+    ).join(' / ')
+  } else artistLine.textContent = track.artist
   if (trackChanged && !firstTrack) animateImmersiveTrackChange(immersiveCover)
-  if (!passive) updateImmersiveBackdrop(cover)
+  if (!passive) updatePlaybackBackdrop(track)
   const liked = state.liked.has(track.id)
   $('#likeButton').classList.toggle('active', liked)
   $('#immersiveLike').classList.toggle('active', liked)
@@ -2906,13 +2950,22 @@ function animateImmersiveTrackChange(coverImage) {
   coverImage.addEventListener('load', animateStage, { once: true })
 }
 
-function updateImmersiveBackdrop(url, decodedImage = null) {
+function updatePlaybackBackdrop(track) {
+  const fullCover = playbackCoverUrl(track.cover)
+  const source = state.mediaLoadingOptimization ? sizedImageUrl(track.cover, 512) : fullCover
+  // The soft background already uses a tiny sample. Keep its source stable
+  // when the visible artwork upgrades to the high resolution cover.
+  updateImmersiveBackdrop(source, fullCover)
+}
+
+function updateImmersiveBackdrop(url, fallbackUrl) {
   if (!url || state.backdropUrl === url) return
   state.backdropUrl = url
   const generation = ++state.backdropGeneration
   const image = new Image()
   image.crossOrigin = 'anonymous'
   image.referrerPolicy = 'no-referrer'
+  let sourceUrl = url
   const reveal = (source, luminance = Number.NaN) => {
     if (generation !== state.backdropGeneration) return
     const layers = [$('#immersiveBackdrop'), $('#immersiveBackdropNext')]
@@ -2929,14 +2982,33 @@ function updateImmersiveBackdrop(url, decodedImage = null) {
     const veil = processed ? Math.max(.14, Math.min(.42, .2 + (luminance - .42) * .62)) : .26
     dom.immersive.style.setProperty('--backdrop-veil', veil.toFixed(3))
     $('.cover-glow', dom.immersive)?.style.setProperty('--cover-ambient', coverValue)
-    next.classList.add('active')
-    current?.classList.remove('active')
+    // Fade the new artwork over a fully opaque old layer. Fading both layers
+    // at once lets the dark player background show through during the blend.
+    state.backdropFade?.cancel()
+    state.backdropFade = null
+    current?.classList.remove('foreground')
+    next.classList.add('active', 'foreground')
     state.backdropLayer = nextIndex
+    const retireCurrent = () => {
+      current?.classList.remove('active')
+      current?.style.removeProperty('--cover')
+    }
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      retireCurrent()
+    } else {
+      const fade = next.animate([{ opacity: 0 }, { opacity: 1 }], {
+        duration: state.legacyPlayer ? 860 : 1300,
+        easing: 'cubic-bezier(.22,.72,.18,1)',
+        fill: 'backwards',
+      })
+      state.backdropFade = fade
+      fade.onfinish = () => {
+        if (state.backdropFade !== fade) return
+        state.backdropFade = null
+        retireCurrent()
+      }
+    }
     scheduleImmersiveSurfaceWarmup()
-    clearTimeout(state.backdropTransitionTimer)
-    state.backdropTransitionTimer = window.setTimeout(() => {
-      if (current && !current.classList.contains('active')) current.style.removeProperty('--cover')
-    }, 1100)
   }
   const processImage = (sourceImage) => {
     if (generation !== state.backdropGeneration) return
@@ -3001,18 +3073,20 @@ function updateImmersiveBackdrop(url, decodedImage = null) {
       softContext.drawImage(canvas, -14, -14, 124, 124)
       reveal(soft.toDataURL('image/jpeg', .9), averageLuminance)
     } catch {
-      reveal(url)
+      reveal(sourceUrl)
     }
   }
   image.onload = () => processImage(image)
   image.onerror = () => {
-    if (generation === state.backdropGeneration) state.backdropUrl = ''
+    if (generation !== state.backdropGeneration) return
+    if (fallbackUrl && sourceUrl !== fallbackUrl) {
+      sourceUrl = fallbackUrl
+      image.src = sourceUrl
+      return
+    }
+    state.backdropUrl = ''
   }
-  if (decodedImage?.naturalWidth > 0) {
-    processImage(decodedImage)
-  } else {
-    image.src = url
-  }
+  image.src = sourceUrl
 }
 
 function refreshPlayingRows() {
@@ -4304,20 +4378,26 @@ function positionTrackMenu(anchor, point = null) {
   dom.trackMenu.style.top = `${Math.max(8, top)}px`
 }
 
-function showTrackMenu(anchor, track, point = null) {
+function repositionExpandedTrackMenu() {
+  const top = Number.parseFloat(dom.trackMenu.style.top)
+  const maxTop = window.innerHeight - dom.trackMenu.offsetHeight - 10
+  if (top > maxTop) dom.trackMenu.style.top = `${Math.max(8, maxTop)}px`
+}
+
+function showTrackMenu(anchor, track, point = null, { fromPlayer = false } = {}) {
   if (!track) return
   state.menuTrack = track
   state.menuPlaylist = null
   const trackArtists = artistsOfTrack(track)
   const trackAlbum = albumOfTrack(track)
-  const playlistId = state.route === 'playlist' ? String(state.routePayload?.id || state.routePayload || '') : ''
+  const playlistId = !fromPlayer && state.route === 'playlist' ? String(state.routePayload?.id || state.routePayload || '') : ''
   const ownPlaylists = state.userPlaylists.filter((playlist) => playlist.creatorId === String(state.profile?.userId || ''))
   const canRemove = state.loggedIn && ownPlaylists.some((playlist) => String(playlist.id) === playlistId)
   const playlistChoices = state.loggedIn
     ? ownPlaylists.filter((playlist) => String(playlist.id) !== playlistId).slice(0, 18)
     : []
-  dom.trackMenu.innerHTML = `<div class="track-menu-title">${escapeHtml(track.name)}</div>
-    <button data-track-menu-action="play">${icon('play')}<span>播放</span></button>
+  dom.trackMenu.innerHTML = `<button type="button" class="track-menu-title" data-track-menu-action="copy-info" title="复制歌曲信息" aria-label="复制歌曲信息：${attr(track.name)}">${escapeHtml(track.name)}</button>
+    <button data-track-menu-action="${fromPlayer ? 'resume' : 'play'}" ${fromPlayer && !dom.audio.paused ? 'disabled' : ''}>${icon('play')}<span>${fromPlayer ? (dom.audio.paused ? '继续播放' : '正在播放') : '播放'}</span></button>
     <button data-track-menu-action="next">${icon('next')}<span>下一首播放</span></button>
     ${trackArtists.length === 1 ? `<button data-track-artist-id="${attr(trackArtists[0].id)}" data-track-artist-name="${attr(trackArtists[0].name)}">${icon('user')}<span>歌手：${escapeHtml(trackArtists[0].name)}</span></button>` : ''}
     ${trackArtists.length > 1 ? `<button data-track-menu-action="choose-artist">${icon('user')}<span>歌手</span><small>›</small></button>
@@ -5342,12 +5422,24 @@ function bindEvents() {
   $('#immersiveFullScreen').addEventListener('click', () => setImmersiveFullScreen(!state.fullScreen))
   dom.immersive.addEventListener('pointermove', showImmersiveChrome)
   dom.immersive.addEventListener('pointerdown', showImmersiveChrome)
+  $('#immersiveArtist').addEventListener('click', (event) => {
+    const artist = event.target.closest('[data-artist-id]')
+    if (!artist) return
+    openImmersive(false)
+    navigate('artist', { id: artist.dataset.artistId, name: artist.dataset.artistName })
+  })
   window.addEventListener('blur', () => {
     if (dom.immersive.classList.contains('open')) dom.immersive.classList.add('chrome-hidden')
   })
   window.addEventListener('focus', showImmersiveChrome)
   dom.playerBar.addEventListener('click', (event) => {
     if (state.current && !event.target.closest('button, input')) openImmersive(true)
+  })
+  dom.playerBar.addEventListener('contextmenu', (event) => {
+    if (!state.current) return
+    event.preventDefault()
+    const point = event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : null
+    showTrackMenu(dom.playerBar, state.current, point, { fromPlayer: true })
   })
   let playerBarDragBlocked = false
   const restorePlayerBarDrag = () => {
@@ -5910,7 +6002,7 @@ function bindEvents() {
     window.setTimeout(finishTrackDrag, 0)
   })
   dom.immersiveQueueList.addEventListener('dragend', handleTrackDragEnd)
-  dom.trackMenu.addEventListener('click', (event) => {
+  dom.trackMenu.addEventListener('click', async (event) => {
     event.stopPropagation()
     const playlist = state.menuPlaylist
     const playlistAction = event.target.closest('[data-playlist-menu-action]')
@@ -5945,7 +6037,19 @@ function bindEvents() {
     }
     const action = event.target.closest('[data-track-menu-action]')
     if (!action || !track) return
-    if (action.dataset.trackMenuAction === 'play') {
+    if (action.dataset.trackMenuAction === 'copy-info') {
+      const info = [track.name, track.artist].filter(Boolean).join(' - ')
+      hideTrackMenu()
+      try {
+        await bridge.clipboard.writeText(info)
+        toast(`已复制歌曲信息 “${info}”`)
+      } catch {
+        toast('无法写入剪贴板', '复制失败', 'error')
+      }
+    } else if (action.dataset.trackMenuAction === 'resume') {
+      hideTrackMenu()
+      if (state.current?.id === track.id && dom.audio.paused) void togglePlayback()
+    } else if (action.dataset.trackMenuAction === 'play') {
       const index = state.pageTracks.findIndex((item) => item.id === track.id)
       playTracks(index >= 0 ? state.pageTracks : [track], Math.max(0, index), { keepSelectedFirst: true })
       hideTrackMenu()
@@ -5957,11 +6061,13 @@ function bindEvents() {
       if (choices) choices.hidden = !choices.hidden
       const artists = $('[data-menu-artists]', dom.trackMenu)
       if (artists) artists.hidden = true
+      repositionExpandedTrackMenu()
     } else if (action.dataset.trackMenuAction === 'choose-artist') {
       const artists = $('[data-menu-artists]', dom.trackMenu)
       if (artists) artists.hidden = !artists.hidden
       const choices = $('[data-menu-playlists]', dom.trackMenu)
       if (choices) choices.hidden = true
+      repositionExpandedTrackMenu()
     } else if (action.dataset.trackMenuAction === 'remove') {
       modifyPlaylist('del', action.dataset.currentPlaylistId, track)
       hideTrackMenu()
@@ -6309,6 +6415,16 @@ function onPageClick(event) {
   if (album) return navigate('album', { id: album.dataset.albumId, name: album.dataset.albumName || '专辑' })
   const user = event.target.closest('[data-user-id]')
   if (user) return navigate('user', { uid: user.dataset.userId, name: user.dataset.userName || '网易云用户' })
+  const connections = event.target.closest('[data-user-connections]')
+  if (connections) return navigate('user-connections', {
+    uid: connections.dataset.profileId,
+    name: connections.dataset.profileName,
+    kind: connections.dataset.userConnections,
+  })
+  const connectionsPage = event.target.closest('[data-connections-offset]')
+  if (connectionsPage && state.route === 'user-connections') {
+    return navigate('user-connections', { ...state.routePayload, offset: Number(connectionsPage.dataset.connectionsOffset) })
+  }
   const routeLink = event.target.closest('[data-route-link]')
   if (routeLink) return navigate(routeLink.dataset.routeLink)
   const login = event.target.closest('[data-login]')
