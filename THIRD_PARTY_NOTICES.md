@@ -89,12 +89,12 @@ SOFTWARE.
 
 MenoRadio bundles **Sarasa UI SC 1.0.28** from
 [be5invis/Sarasa-Gothic](https://github.com/be5invis/Sarasa-Gothic), extracted
-from the locally installed TTC files and losslessly packaged as WOFF. The
-ExtraLight, Light, Regular, SemiBold and Bold weights each include their genuine
-italic companion. Glyph outlines, hinting and metrics are preserved. A CSS alias
-(`MenoRadio Sarasa UI SC`) distinguishes the bundled faces from installed fonts. The fonts are
-licensed under the SIL Open Font License, Version 1.1. The full license text is
-shipped beside the font files in `src/assets/fonts/OFL.txt`.
+from the locally installed TTC files and losslessly packaged as WOFF2. The
+bundled faces are Regular, Italic, SemiBold, Bold and Bold Italic. Glyph
+outlines, hinting and metrics are preserved. The CSS alias
+`MenoRadio Sarasa UI SC` distinguishes the bundled faces from installed fonts.
+The fonts are licensed under the SIL Open Font License, Version 1.1. The full
+license text is shipped beside the font files in `src/assets/fonts/OFL.txt`.
 
 ## Service and product names
 
