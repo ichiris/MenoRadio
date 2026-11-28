@@ -228,6 +228,8 @@ const state = {
   loggedIn: false,
   userPlaylists: [],
   home: null,
+  dailyRecommendation: null,
+  dailyRequest: null,
   current: null,
   queue: [],
   queueSource: [],
@@ -1010,7 +1012,8 @@ function renderTrackTable(tracks, options = {}) {
       : '换个关键词，或者稍后再回来看看。'
     return `<div class="empty-state"><div class="empty-state-inner"><div class="empty-icon">${icon('list')}</div><h2>${escapeHtml(title)}</h2>${description ? `<p>${escapeHtml(description)}</p>` : ''}</div></div>`
   }
-  return `<div class="track-section">${tracks.map((track, index) => `<div class="track-row ${state.current?.id === track.id ? 'playing' : ''}" data-track-index="${index}" role="button" tabindex="0" draggable="true">
+  const visibleTracks = options.limit == null ? tracks : tracks.slice(0, options.limit)
+  return `<div class="track-section"${options.playOnClick ? ' data-play-track-on-click' : ''}>${visibleTracks.map((track, index) => `<div class="track-row ${state.current?.id === track.id ? 'playing' : ''}" data-track-index="${index}" role="button" tabindex="0" draggable="true">
     <span class="track-index">${String(index + 1).padStart(2, '0')}</span>
     <div class="track-main"><img class="track-cover" ${thumbnailAttributes(track.cover, thumbnailPixelSize(40))} alt=""><span class="track-copy"><span class="track-name">${escapeHtml(track.name)}${track.alias ? ` <small>(${escapeHtml(track.alias)})</small>` : ''}</span><span class="track-artist">${escapeHtml(track.artist)}</span></span></div>
     <span class="track-album">${escapeHtml(track.album)}</span>
@@ -1019,27 +1022,57 @@ function renderTrackTable(tracks, options = {}) {
   </div>`).join('')}</div>`
 }
 
-async function loadHome(force = false) {
-  if (state.home && !force) return state.home
+const dailyDateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', dateStyle: 'short' })
+
+function dailyDateKey() {
+  return dailyDateFormatter.format(new Date())
+}
+
+function dailyTracksFrom(body) {
+  if (body?.code != null && Number(body.code) !== 200) throw new Error(body.message || body.msg || '每日推荐请求失败')
+  const songs = body?.data?.dailySongs || body?.recommend
+  return Array.isArray(songs) ? uniqueTracks(songs.map(normalizeTrack)) : []
+}
+
+function todayDailyTracks() {
+  const day = dailyDateKey()
+  if (state.dailyRecommendation?.day === day) return state.dailyRecommendation.tracks
+  return state.home?.day === day ? state.home.dailyTracks : []
+}
+
+function homePlaybackTracks() {
+  const daily = todayDailyTracks()
+  return daily.length ? daily : state.home?.newSongs || []
+}
+
+async function loadHome() {
+  const day = dailyDateKey()
+  if (state.home?.day === day) return state.home
+  const userId = state.profile?.userId
   const data = unwrap(await bridge.data.home())
+  if (userId !== state.profile?.userId) return null
   const personalized = (data.personalized?.result || []).map(normalizePlaylist)
   const top = (data.topPlaylists?.playlists || []).map(normalizePlaylist)
   const recommended = (data.recommended?.recommend || []).map(normalizePlaylist)
   const newSongs = (data.newSongs?.result || []).map(normalizeTrack)
-  const daily = (data.daily?.data?.dailySongs || []).map(normalizeTrack)
+  const dailyTracks = Number(data.daily?.code ?? 200) === 200 ? dailyTracksFrom(data.daily) : []
   state.home = {
+    day,
     playlists: [...recommended, ...personalized, ...top].filter((item, index, list) => list.findIndex((other) => other.id === item.id) === index).slice(0, 12),
-    newSongs: (daily.length ? daily : newSongs).slice(0, 12),
+    dailyTracks,
+    newSongs: newSongs.slice(0, 12),
   }
-  if (!state.home.playlists.length && !state.home.newSongs.length) throw new Error('未返回推荐内容')
+  if (!state.home.playlists.length && !homePlaybackTracks().length) throw new Error('未返回推荐内容')
   return state.home
 }
 
 async function renderHome() {
-  skeletonPage()
+  if (state.home?.day !== dailyDateKey()) skeletonPage()
+  const page = dom.page.firstElementChild
   try {
     const home = await loadHome()
-    if (state.route !== 'home') return
+    if (!home || state.route !== 'home' || dom.page.firstElementChild !== page) return
+    const hasDaily = todayDailyTracks().length > 0
     dom.page.innerHTML = `<div class="page-inner">
       <section class="hero">
         <div class="hero-copy"><span class="eyebrow">今日推荐</span><h1>${state.loggedIn ? '今天听什么？' : '发现音乐'}</h1>
@@ -1062,11 +1095,11 @@ async function renderHome() {
       </section>
       <div class="section-title"><h2>${state.loggedIn ? '为你推荐' : '热门歌单'}</h2><button data-route-link="search">发现更多 ›</button></div>
       ${renderCards(home.playlists.slice(0, 6))}
-      <div class="section-title"><h2>${state.loggedIn ? '你的今日歌曲' : '新歌速递'}</h2><button data-play-home>播放全部 ›</button></div>
-      ${renderTrackTable(home.newSongs.slice(0, 10))}
+      <div class="section-title"><h2>${hasDaily ? '你的今日歌曲' : '新歌速递'}</h2>${hasDaily ? '<button type="button" data-route-link="daily">查看全部 ›</button>' : '<button type="button" data-play-home>播放全部 ›</button>'}</div>
+      ${hasDaily ? renderTrackTable(todayDailyTracks(), { limit: 10, playOnClick: true }) : renderTrackTable(home.newSongs.slice(0, 10))}
     </div>`
   } catch (error) {
-    if (state.route === 'home') renderError('主页加载失败', error.message, () => { state.home = null; renderHome() })
+    if (state.route === 'home' && dom.page.firstElementChild === page) renderError('主页加载失败', error.message, () => { state.home = null; renderHome() })
   }
 }
 
@@ -1244,21 +1277,73 @@ async function renderAlbum(payload) {
   }
 }
 
+function updateDailyRefreshButton() {
+  const button = $('[data-daily-refresh]', dom.page)
+  if (!button) return
+  button.disabled = Boolean(state.dailyRequest)
+  const label = { sync: '正在同步…', refresh: '正在刷新…' }
+  button.textContent = label[state.dailyRequest] || '刷新推荐'
+}
+
+function renderDailyTracks(tracks) {
+  const date = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())
+  const refresh = state.loggedIn && todayDailyTracks().length
+    ? '<button type="button" class="secondary-button" data-daily-refresh>刷新推荐</button>'
+    : ''
+  const actions = `<div class="daily-actions">${refresh}<button type="button" class="primary-button" data-play-all>${icon('play')} 播放全部</button></div>`
+  dom.page.innerHTML = `<div class="page-inner" data-daily-date="${attr(dailyDateKey())}">${pageTitle('每日推荐', `${date} · 根据你的音乐口味更新`, actions)}${renderTrackTable(tracks)}</div>`
+  updateDailyRefreshButton()
+}
+
 async function renderDaily() {
+  const cached = todayDailyTracks()
+  if (cached.length) {
+    renderDailyTracks(cached)
+    void updateDailyRecommendations()
+    return
+  }
+  const userId = state.profile?.userId
+  const day = dailyDateKey()
   skeletonPage()
+  const page = dom.page.firstElementChild
+  const isCurrent = () => state.route === 'daily' && dom.page.firstElementChild === page && state.profile?.userId === userId
   try {
-    let tracks = []
-    if (state.loggedIn) {
-      const body = unwrap(await bridge.data.daily())
-      tracks = (body.data?.dailySongs || body.recommend || []).map(normalizeTrack)
-    }
-    if (!tracks.length) tracks = (await loadHome()).newSongs
-    if (!tracks.length) throw new Error('未返回推荐歌曲')
-    if (state.route !== 'daily') return
-    const date = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())
-    dom.page.innerHTML = `<div class="page-inner">${pageTitle('每日推荐', `${date} · 根据你的音乐口味更新`, `<button class="primary-button" data-play-all>${icon('play')} 播放全部</button>`)}${renderTrackTable(tracks)}</div>`
+    const tracks = state.loggedIn ? dailyTracksFrom(unwrap(await bridge.data.daily())) : []
+    const fallback = tracks.length ? [] : (await loadHome())?.newSongs || []
+    if (!isCurrent()) return
+    if (tracks.length) state.dailyRecommendation = { day, tracks }
+    const daily = todayDailyTracks()
+    const list = daily.length ? daily : fallback
+    if (!list.length) throw new Error('未返回推荐歌曲')
+    renderDailyTracks(list)
   } catch (error) {
-    if (state.route === 'daily') renderError('每日推荐加载失败', error.message, renderDaily)
+    if (isCurrent()) renderError('每日推荐加载失败', error.message, renderDaily)
+  }
+}
+
+async function updateDailyRecommendations({ refresh = false } = {}) {
+  if (state.route !== 'daily' || !state.loggedIn || state.dailyRequest) return
+  const userId = state.profile?.userId
+  const day = dailyDateKey()
+  const previous = todayDailyTracks()
+  state.dailyRequest = refresh ? 'refresh' : 'sync'
+  updateDailyRefreshButton()
+  const sameAccount = () => state.loggedIn && state.profile?.userId === userId
+  try {
+    const result = await (refresh ? bridge.data.refreshDaily() : bridge.data.daily())
+    const tracks = dailyTracksFrom(unwrap(result))
+    if (!tracks.length) throw new Error('网易云未返回推荐歌曲')
+    if (!sameAccount() || day !== dailyDateKey()) return
+    const changed = tracks.length !== previous.length || tracks.some((track, index) => track.id !== previous[index].id)
+    state.dailyRecommendation = { day, tracks }
+    if (changed && state.route === 'daily') renderDailyTracks(tracks)
+    else if (changed && state.route === 'home') void renderHome()
+    if (refresh) toast(changed ? '每日推荐已刷新' : '网易云返回了相同的推荐歌曲')
+  } catch (error) {
+    if (refresh && sameAccount()) toast(error.message || '暂时无法刷新每日推荐', '刷新失败', 'error')
+  } finally {
+    state.dailyRequest = null
+    updateDailyRefreshButton()
   }
 }
 
@@ -3097,7 +3182,7 @@ function refreshPlayingRows() {
 
 async function togglePlayback() {
   if (!state.current) {
-    const tracks = state.pageTracks.length ? state.pageTracks : state.home?.newSongs
+    const tracks = state.pageTracks.length ? state.pageTracks : homePlaybackTracks()
     if (tracks?.length) playTracks(tracks, 0)
     return
   }
@@ -4907,6 +4992,10 @@ function updateProfileUi() {
 async function loadAccount() {
   try {
     const auth = unwrap(await bridge.auth.state())
+    if (state.profile?.userId && state.profile.userId !== auth.profile?.userId) {
+      state.home = null
+      state.dailyRecommendation = null
+    }
     state.loggedIn = Boolean(auth.loggedIn)
     state.profile = auth.profile || null
     updateProfileUi()
@@ -5275,12 +5364,13 @@ async function pollQr(key, generation) {
 }
 
 async function afterLogin() {
+  state.home = null
+  state.dailyRecommendation = null
   updateProfileUi()
   if (state.profile?.userId) await Promise.all([
     loadUserPlaylists(state.profile.userId),
     loadLikedSongs(state.profile.userId),
   ])
-  state.home = null
   if (['home', 'liked', 'daily', 'settings'].includes(state.route)) renderRoute()
 }
 
@@ -5291,6 +5381,7 @@ async function logout() {
   state.userPlaylists = []
   state.liked = new Set()
   state.home = null
+  state.dailyRecommendation = null
   updateProfileUi()
   renderPlaylistNav([])
   toast('已从本机移除登录会话')
@@ -5432,6 +5523,12 @@ function bindEvents() {
     if (dom.immersive.classList.contains('open')) dom.immersive.classList.add('chrome-hidden')
   })
   window.addEventListener('focus', showImmersiveChrome)
+  window.addEventListener('focus', () => {
+    const day = dailyDateKey()
+    if (state.route === 'home' && state.home && state.home.day !== day) void renderHome()
+    const dailyPage = dom.page.firstElementChild?.dataset.dailyDate
+    if (state.route === 'daily' && dailyPage && dailyPage !== day) void renderDaily()
+  })
   dom.playerBar.addEventListener('click', (event) => {
     if (state.current && !event.target.closest('button, input')) openImmersive(true)
   })
@@ -5663,8 +5760,14 @@ function bindEvents() {
   })
 
   dom.page.addEventListener('click', onPageClick)
+  dom.page.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.repeat && event.target.matches('[data-play-track-on-click] [data-track-index]')) {
+      event.preventDefault()
+      event.target.click()
+    }
+  })
   dom.page.addEventListener('dblclick', (event) => {
-    if (event.target.closest('button, input, a')) return
+    if (event.target.closest('button, input, a, [data-play-track-on-click]')) return
     const row = event.target.closest('[data-track-index]')
     if (!row) return
     const index = Number(row.dataset.trackIndex)
@@ -6622,13 +6725,19 @@ function onPageClick(event) {
   }
   const row = event.target.closest('[data-track-index]')
   if (row) {
-    state.selectedTrackIndex = Number(row.dataset.trackIndex)
+    const index = Number(row.dataset.trackIndex)
+    if (row.closest('[data-play-track-on-click]')) {
+      if (event.detail <= 1 && state.pageTracks[index]) return playTracks(state.pageTracks, index, { keepSelectedFirst: true })
+      return
+    }
+    state.selectedTrackIndex = index
     $$('.track-row', dom.page).forEach((item) => item.classList.toggle('selected', item === row))
     return
   }
   if (event.target.closest('[data-playlist-play-all]')) return playAllTracks(state.playlistTracks)
   if (event.target.closest('[data-play-all]')) return playAllTracks(state.pageTracks)
-  if (event.target.closest('[data-play-home]')) return playAllTracks(state.home?.newSongs || [])
+  if (event.target.closest('[data-play-home]')) return playAllTracks(homePlaybackTracks())
+  if (event.target.closest('[data-daily-refresh]')) return updateDailyRecommendations({ refresh: true })
   state.selectedTrackIndex = -1
   $$('.track-row.selected', dom.page).forEach((item) => item.classList.remove('selected'))
 }

@@ -1999,6 +1999,10 @@ function registerDataIpc() {
 
   ipcMain.handle('data:personal-fm', () => guarded(() => callApi('personal_fm')))
   ipcMain.handle('data:daily', () => guarded(() => callApi('recommend_songs')))
+  ipcMain.handle('data:daily-refresh', () => guarded(() => {
+    if (!sessionCookie) throw new Error('请先登录网易云音乐')
+    return callApi('recommend_songs', { afresh: true })
+  }))
   ipcMain.handle('data:like', (_event, payload) => guarded(() =>
     callApi('like', { id: String(payload?.id || ''), like: payload?.like !== false })
   ))

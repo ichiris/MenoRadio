@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld('menoradio', {
     songUrl: (id, level = 'best') => invoke('data:song-url', { id, level }),
     personalFm: () => invoke('data:personal-fm'),
     daily: () => invoke('data:daily'),
+    refreshDaily: () => invoke('data:daily-refresh'),
     like: (id, like = true) => invoke('data:like', { id, like }),
     likeList: (uid) => invoke('data:like-list', uid),
     playlistSubscribe: (id, subscribe = true) => invoke('data:playlist-subscribe', { id, subscribe }),
