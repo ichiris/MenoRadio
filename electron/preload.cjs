@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 const invoke = (channel, payload) => ipcRenderer.invoke(channel, payload)
 
@@ -92,6 +92,54 @@ contextBridge.exposeInMainWorld('menoradio', {
       const listener = (_event, value) => callback(value)
       ipcRenderer.on('floating-lyrics:state-changed', listener)
       return () => ipcRenderer.removeListener('floating-lyrics:state-changed', listener)
+    },
+  },
+  plugins: {
+    list: () => invoke('plugins:list'),
+    get: (id) => invoke('plugins:get', id),
+    rescan: () => invoke('plugins:rescan'),
+    installFromFolder: (options = {}) => invoke('plugins:install-folder', options),
+    installFromArchive: (options = {}) => invoke('plugins:install-archive', options),
+    installFromPath: (targetPath, options = {}) => invoke('plugins:install-path', { path: targetPath, options }),
+    getPathForFile: (file) => {
+      try {
+        return webUtils?.getPathForFile ? webUtils.getPathForFile(file) : (file?.path || '')
+      } catch {
+        return file?.path || ''
+      }
+    },
+    enable: (id, options = {}) => invoke('plugins:enable', { id, force: Boolean(options.force) }),
+    disable: (id) => invoke('plugins:disable', id),
+    reload: (id) => invoke('plugins:reload', id),
+    uninstall: (id, options = {}) => invoke('plugins:uninstall', { id, removeData: Boolean(options.removeData) }),
+    openDir: (id = '') => invoke('plugins:open-dir', id),
+    getSettings: (id) => invoke('plugins:get-settings', id),
+    setSettings: (id, patch) => invoke('plugins:set-settings', { id, patch }),
+    storage: {
+      get: (id, key) => invoke('plugins:storage-get', { id, key }),
+      set: (id, key, value) => invoke('plugins:storage-set', { id, key, value }),
+      delete: (id, key) => invoke('plugins:storage-delete', { id, key }),
+      all: (id) => invoke('plugins:storage-all', id),
+      clear: (id) => invoke('plugins:storage-clear', id),
+    },
+    invokeBackend: (pluginId, method, payload) => invoke('plugins:invoke-backend', { pluginId, method, payload }),
+    invokeService: (serviceName, method, payload) => invoke('plugins:invoke-service', { serviceName, method, payload }),
+    reportRendererState: (pluginId, state) => ipcRenderer.send('plugins:report-renderer', { pluginId, state }),
+    notifyEvent: (event, payload) => ipcRenderer.send('plugins:notify-event', { event, payload }),
+    onChanged: (callback) => {
+      const listener = (_event, value) => callback(value)
+      ipcRenderer.on('plugins:changed', listener)
+      return () => ipcRenderer.removeListener('plugins:changed', listener)
+    },
+    onSettingsChanged: (callback) => {
+      const listener = (_event, value) => callback(value)
+      ipcRenderer.on('plugins:settings-changed', listener)
+      return () => ipcRenderer.removeListener('plugins:settings-changed', listener)
+    },
+    onBackendEvent: (callback) => {
+      const listener = (_event, value) => callback(value)
+      ipcRenderer.on('plugins:backend-event', listener)
+      return () => ipcRenderer.removeListener('plugins:backend-event', listener)
     },
   },
 })

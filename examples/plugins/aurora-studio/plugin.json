@@ -1,0 +1,55 @@
+{
+  "id": "com.menoradio.aurora-studio",
+  "name": "Aurora Studio",
+  "author": "ichiris",
+  "description": "提供极光主题、黑胶播放页样式、曲目洞察与本地播放统计。",
+  "version": "1.0.0",
+  "supportedVersions": ">=0.18.0 <1.0.0",
+  "license": "MIT",
+  "icon": "icon.svg",
+  "capabilities": ["theme", "player", "ui", "backend", "frontend"],
+  "main": "main.cjs",
+  "renderer": "renderer.js",
+  "styles": ["styles.css"],
+  "contributes": {
+    "themes": [
+      {
+        "id": "aurora-glass",
+        "label": "极光琉璃 (Aurora)",
+        "colorScheme": "dark",
+        "variables": {
+          "--bg": "#111622",
+          "--sidebar": "rgba(17, 23, 37, 0.96)",
+          "--player": "rgba(15, 20, 32, 0.98)",
+          "--main-bg": "rgba(18, 24, 38, 0.84)",
+          "--accent": "#5eead4",
+          "--accent-rgb": "94, 234, 212",
+          "--accent-strong": "#99f6e4",
+          "--hero-background": "radial-gradient(ellipse at 82% 30%, rgba(94, 234, 212, .26), transparent 38%), radial-gradient(circle at 20% 10%, rgba(129, 140, 248, .2), transparent 42%), linear-gradient(135deg, #172034 0%, #161d2f 55%, #11222a 100%)"
+        }
+      }
+    ],
+    "settings": [
+      {
+        "key": "showMetaBadge",
+        "type": "boolean",
+        "label": "在播放页显示曲目元信息徽章",
+        "description": "在沉浸播放页标题下方显示时长与本插件统计的播放次数",
+        "default": true
+      },
+      {
+        "key": "accentGlow",
+        "type": "color",
+        "label": "黑胶模式光环颜色",
+        "default": "#5eead4"
+      },
+      {
+        "key": "welcomeBanner",
+        "type": "string",
+        "label": "统计页标语",
+        "placeholder": "输入自定义标语",
+        "default": ""
+      }
+    ]
+  }
+}

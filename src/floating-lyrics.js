@@ -1,4 +1,5 @@
 const bridge = window.floatingLyrics
+const floatingPlugins = window.MenoRadioFloatingPlugins
 const i18n = window.MenoRadioI18n
 i18n.initializeDocument()
 const { fontCss, ensureLocalFont } = window.MenoRadioCore
@@ -69,7 +70,8 @@ function scheduleSurfaceHide() {
 function applyConfig(next = {}) {
   const previousFontFamily = config.fontFamily
   const previousLanguage = config.language
-  config = { ...config, ...next }
+  const hooked = floatingPlugins?.runSyncHook('config:apply', { config: { ...config, ...next } })
+  config = hooked?.config || { ...config, ...next }
   if (config.language !== previousLanguage) i18n.setLanguage(config.language)
   const fontFamily = config.fontFamily
   if (fontFamily !== previousFontFamily) {
@@ -99,11 +101,14 @@ function applyConfig(next = {}) {
 }
 
 function render(next = {}) {
-  payload = { ...payload, ...next }
-  primary.textContent = payload.text || ''
-  translation.textContent = payload.translation || ''
-  translationViewport.hidden = !payload.translation
-  surface.classList.toggle('has-translation', Boolean(payload.translation))
+  const hooked = floatingPlugins?.runSyncHook('lyrics:render', { payload: { ...payload, ...next }, handled: false })
+  payload = hooked?.payload || { ...payload, ...next }
+  if (!hooked?.handled) {
+    primary.textContent = payload.text || ''
+    translation.textContent = payload.translation || ''
+    translationViewport.hidden = !payload.translation
+    surface.classList.toggle('has-translation', Boolean(payload.translation))
+  }
   layoutMarquee()
 }
 
@@ -193,3 +198,8 @@ window.addEventListener('resize', layoutMarquee)
 bridge.onConfig(applyConfig)
 bridge.onUpdate(render)
 bridge.state().then((value) => applyConfig(value?.config || {})).catch(() => {})
+void floatingPlugins?.initialize({
+  dom: { surface, primary, primaryViewport, translation, translationViewport, contextMenu },
+  getConfig: () => config,
+  getPayload: () => payload,
+})

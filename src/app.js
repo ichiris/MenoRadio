@@ -1,4 +1,6 @@
 const bridge = window.menoradio
+const plugins = window.MenoRadioPlugins
+const pluginUi = window.MenoRadioPluginUi
 const i18n = window.MenoRadioI18n
 const { t } = i18n
 i18n.initializeDocument()
@@ -47,6 +49,12 @@ let restoringPageZoom = false
 let immersiveFontWarmupEnabled = false
 let immersiveFontWarmupPending = false
 let immersiveFontWarmupKey = ''
+let pluginsReady = false
+let activeCustomRouteCleanup = null
+let activePluginPlayerStyle = null
+let activeLoginTabCleanups = []
+let activePluginModalCleanup = null
+const mountedImmersivePluginViews = new Map()
 
 function markdownInline(value) {
   const tokens = []
@@ -264,6 +272,7 @@ const state = {
   mediaLoadingOptimization: localStorage.getItem('menoradio.mediaLoadingOptimization') !== 'false',
   quickQueueReveal: localStorage.getItem('menoradio.quickQueueReveal') !== 'false',
   legacyPlayer: localStorage.getItem('menoradio.legacyPlayer') === 'true',
+  playerStyle: localStorage.getItem('menoradio.playerStyle') || (localStorage.getItem('menoradio.legacyPlayer') === 'true' ? 'legacy' : 'modern'),
   wordHighlight: localStorage.getItem('menoradio.wordHighlight') !== 'false',
   depthBlur: localStorage.getItem('menoradio.depthBlur') !== 'false',
   userVolume: .75,
@@ -456,9 +465,25 @@ const themes = [
 
 const playerStyles = [['modern', '新版'], ['legacy', '旧版']]
 
+function allThemes() {
+  const extra = (plugins?.getThemes?.() || []).map((item) => [item.id, item.label])
+  return [...themes, ...extra]
+}
+
+function allPlayerStyles() {
+  const extra = (plugins?.getPlayerStyles?.() || []).map((item) => [item.id, item.label])
+  return [...playerStyles, ...extra]
+}
+
 function applyTheme() {
-  if (!themes.some(([value]) => value === state.theme)) state.theme = 'dark'
+  const available = allThemes()
+  const exists = available.some(([value]) => value === state.theme)
+  if (!exists && (pluginsReady || !String(state.theme || '').startsWith('plugin:'))) {
+    state.theme = 'dark'
+  }
   document.documentElement.dataset.theme = state.theme
+  plugins?.runSyncHook('theme:apply', { theme: state.theme })
+  plugins?.emit('theme:changed', { theme: state.theme }, { mirrorToBackend: true })
 }
 
 applyTheme()
@@ -498,9 +523,33 @@ function applyDisplaySettings() {
 }
 
 function applyPlayerStyleSettings() {
+  const availableStyles = allPlayerStyles()
+  const validStyle = availableStyles.some(([value]) => value === state.playerStyle)
+  if (!validStyle && (pluginsReady || !String(state.playerStyle || '').startsWith('plugin:'))) {
+    state.playerStyle = state.legacyPlayer ? 'legacy' : 'modern'
+  }
+  state.legacyPlayer = state.playerStyle === 'legacy'
   if (state.legacyPlayer) invalidateImmersiveLyricContainment()
-  if (state.legacyPlayer) document.documentElement.dataset.playerStyle = 'legacy'
-  else delete document.documentElement.dataset.playerStyle
+
+  const nextPluginStyle = (plugins?.getPlayerStyles?.() || []).find((item) => item.id === state.playerStyle) || null
+  if (activePluginPlayerStyle && activePluginPlayerStyle !== nextPluginStyle) {
+    if (activePluginPlayerStyle.className) dom.immersive.classList.remove(activePluginPlayerStyle.className)
+    try { activePluginPlayerStyle.onDeactivate?.(dom.immersive) } catch {}
+    activePluginPlayerStyle = null
+  }
+
+  if (state.playerStyle && state.playerStyle !== 'modern') {
+    document.documentElement.dataset.playerStyle = state.playerStyle
+  } else {
+    delete document.documentElement.dataset.playerStyle
+  }
+
+  if (nextPluginStyle && activePluginPlayerStyle !== nextPluginStyle) {
+    if (nextPluginStyle.className) dom.immersive.classList.add(nextPluginStyle.className)
+    activePluginPlayerStyle = nextPluginStyle
+    try { nextPluginStyle.onActivate?.(dom.immersive) } catch {}
+  }
+
   dom.immersive.classList.toggle('depth-blur-off', !state.depthBlur)
   syncImmersiveAppPresentation()
 }
@@ -903,7 +952,7 @@ function albumOfTrack(track) {
 
 function normalizeTrack(input) {
   const song = input?.song || input || {}
-  return {
+  const track = {
     id: String(song.id ?? input?.id ?? ''),
     name: song.name || input?.name || t('未命名歌曲'),
     artist: artistOf(song),
@@ -913,10 +962,11 @@ function normalizeTrack(input) {
     alias: (song.alia || song.alias || []).join(' / '),
     raw: input,
   }
+  return plugins?.runSyncHook('track:normalize', { track, input })?.track || track
 }
 
 function normalizePlaylist(input) {
-  return {
+  const playlist = {
     id: String(input?.id ?? ''),
     name: input?.name || t('未命名歌单'),
     cover: imageOf(input, input?.name),
@@ -929,6 +979,7 @@ function normalizePlaylist(input) {
     tags: Array.isArray(input?.tags) ? input.tags.map(String) : [],
     raw: input,
   }
+  return plugins?.runSyncHook('playlist:normalize', { playlist, input })?.playlist || playlist
 }
 
 function likedPlaylistOf(playlists = state.userPlaylists) {
@@ -1285,15 +1336,19 @@ async function renderAlbum(payload) {
 function updateDailyRefreshButton() {
   const button = $('[data-daily-refresh]', dom.page)
   if (!button) return
-  button.disabled = Boolean(state.dailyRequest)
+  const busy = Boolean(state.dailyRequest)
+  button.disabled = busy
+  button.classList.toggle('is-spinning', busy)
   const label = { sync: t('正在同步…'), refresh: t('正在刷新…') }
-  button.textContent = label[state.dailyRequest] || t('刷新推荐')
+  const text = label[state.dailyRequest] || t('刷新推荐')
+  button.title = text
+  button.setAttribute('aria-label', text)
 }
 
 function renderDailyTracks(tracks) {
   const date = new Intl.DateTimeFormat(i18n.locale, { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())
   const refresh = state.loggedIn && todayDailyTracks().length
-    ? `<button type="button" class="secondary-button" data-daily-refresh>${escapeHtml(t('刷新推荐'))}</button>`
+    ? `<button type="button" class="icon-button" data-daily-refresh title="${attr(t('刷新推荐'))}" aria-label="${attr(t('刷新推荐'))}">${icon('refresh')}</button>`
     : ''
   const actions = `<div class="daily-actions">${refresh}<button type="button" class="primary-button" data-play-all>${icon('play')} ${escapeHtml(t('播放全部'))}</button></div>`
   dom.page.innerHTML = `<div class="page-inner" data-daily-date="${attr(dailyDateKey())}">${pageTitle(t('每日推荐'), `${date} · ${t('根据你的音乐口味更新')}`, actions)}${renderTrackTable(tracks)}</div>`
@@ -1571,7 +1626,8 @@ const FONT_BATCH_SIZE = 32
 
 function filteredFontNames(filter = '') {
   const query = String(filter || '').trim().toLocaleLowerCase()
-  return [state.fontFamily, 'system', ...state.systemFonts]
+  const pluginFonts = (plugins?.getFonts?.() || []).map((item) => item.family)
+  return [state.fontFamily, 'system', ...pluginFonts, ...state.systemFonts]
     .filter((name, index, list) => list.indexOf(name) === index)
     .filter((name) => !query || fontLabel(name).toLocaleLowerCase().includes(query))
 }
@@ -1610,7 +1666,8 @@ function renderFontOptions(filter = '', reset = true) {
 
 function floatingFontNames(filter = '') {
   const query = String(filter || '').trim().toLocaleLowerCase()
-  return [state.floatingLyrics.fontFamily, 'system', ...state.systemFonts]
+  const pluginFonts = (plugins?.getFonts?.() || []).map((item) => item.family)
+  return [state.floatingLyrics.fontFamily, 'system', ...pluginFonts, ...state.systemFonts]
     .filter((name, index, list) => list.indexOf(name) === index)
     .filter((name) => !query || fontLabel(name).toLocaleLowerCase().includes(query))
 }
@@ -1833,14 +1890,16 @@ async function loadSystemFonts() {
 }
 
 function renderSettings() {
-  const version = '0.17.0'
+  const version = '0.18.0'
+  const pluginCards = plugins?.getSettingsCards?.() || []
   dom.page.innerHTML = `<div class="page-inner">${pageTitle(t('设置'))}
     <div class="settings-grid">
+      <div class="plugin-slot settings-plugin-slot" data-plugin-slot="settings-top"></div>
       <h2 class="settings-section-label">${escapeHtml(t('账户'))}</h2>
       <section class="settings-card"><div><h3>${escapeHtml(t('网易云音乐账户'))}</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || t('网易云用户')) : t('同步收藏、歌单与每日推荐')}</p></div><div class="setting-actions">${state.loggedIn ? `<button class="secondary-button" data-logout>${escapeHtml(t('退出登录'))}</button>` : `<button class="primary-button" data-login>${escapeHtml(t('登录'))}</button>`}</div></section>
       <h2 class="settings-section-label">${escapeHtml(t('外观'))}</h2>
       <section class="settings-card theme-setting-card"><div><h3>${escapeHtml(t('语言'))}</h3></div>${choicePickerMarkup('language', i18n.locale, i18n.languages, t('语言'))}</section>
-      <section class="settings-card theme-setting-card"><div><h3>${escapeHtml(t('配色方案'))}</h3></div>${choicePickerMarkup('theme', state.theme, themes, t('配色方案'))}</section>
+      <section class="settings-card theme-setting-card"><div><h3>${escapeHtml(t('配色方案'))}</h3></div>${choicePickerMarkup('theme', state.theme, allThemes(), t('配色方案'))}</section>
       <section class="settings-card font-setting-card"><div><h3>${escapeHtml(t('字体'))}</h3></div><div class="font-picker-control">
         <button type="button" class="setting-picker" data-font-picker aria-expanded="false"><span style="font-family:${attr(fontCss(state.fontFamily))}">${escapeHtml(fontLabel(state.fontFamily))}</span><svg><use href="#i-chevron"/></svg></button>
         <div class="font-picker-popover" data-font-popover aria-hidden="true">
@@ -1848,7 +1907,7 @@ function renderSettings() {
           <div class="font-picker-list" data-font-list>${fontOptionsMarkup()}</div>
         </div>
       </div></section>
-      <section class="settings-card theme-setting-card"><div><h3>${escapeHtml(t('播放器样式'))}</h3></div>${choicePickerMarkup('player-style', state.legacyPlayer ? 'legacy' : 'modern', playerStyles, t('播放器样式'))}</section>
+      <section class="settings-card theme-setting-card"><div><h3>${escapeHtml(t('播放器样式'))}</h3></div>${choicePickerMarkup('player-style', state.playerStyle || (state.legacyPlayer ? 'legacy' : 'modern'), allPlayerStyles(), t('播放器样式'))}</section>
       <section class="settings-card" data-modern-player-setting ${state.legacyPlayer ? 'hidden' : ''}><div><h3>${escapeHtml(t('逐字高亮'))}</h3></div><label class="setting-switch" title="${attr(t('支持逐字歌词的歌曲按演唱进度逐字点亮'))}"><input type="checkbox" data-word-highlight ${state.wordHighlight ? 'checked' : ''}><i></i></label></section>
       <section class="settings-card" data-modern-player-setting ${state.legacyPlayer ? 'hidden' : ''}><div><h3>${escapeHtml(t('景深模糊'))}</h3></div><label class="setting-switch" title="${attr(t('远离当前句的歌词逐渐模糊'))}"><input type="checkbox" data-depth-blur ${state.depthBlur ? 'checked' : ''}><i></i></label></section>
       <h2 class="settings-section-label">${escapeHtml(t('播放'))}</h2>
@@ -1857,15 +1916,73 @@ function renderSettings() {
       <section class="settings-card"><div><h3>${escapeHtml(t('媒体加载优化'))}</h3></div><label class="setting-switch"><input type="checkbox" data-media-loading-optimization ${state.mediaLoadingOptimization ? 'checked' : ''}><i></i></label></section>
       <section class="settings-card"><div><h3>${escapeHtml(t('快捷呼出播放队列'))}</h3></div><label class="setting-switch" title="${attr(t('鼠标贴近窗口右侧时呼出播放队列'))}"><input type="checkbox" data-quick-queue-reveal ${state.quickQueueReveal ? 'checked' : ''}><i></i></label></section>
       <button type="button" class="settings-card settings-navigation-card" data-route-link="settings-floating"><h3>${escapeHtml(t('悬浮歌词'))}</h3><svg><use href="#i-chevron"/></svg></button>
+      <h2 class="settings-section-label">${escapeHtml(t('扩展'))}</h2>
+      <button type="button" class="settings-card settings-navigation-card" data-route-link="settings-plugins"><h3>${escapeHtml(t('插件'))}</h3><svg><use href="#i-chevron"/></svg></button>
+      ${pluginCards.length ? `<div class="plugin-settings-cards" data-plugin-settings-cards></div>` : ''}
       <h2 class="settings-section-label">${escapeHtml(t('数据'))}</h2>
       <section class="settings-card data-management-card"><div><h3>${escapeHtml(t('数据管理'))}</h3></div><div class="setting-actions"><button class="secondary-button" data-clear-cache>${escapeHtml(t('清理缓存'))}</button><button type="button" class="secondary-button application-reset-button" data-reset-application>${escapeHtml(t('重置'))}</button></div></section>
       <h2 class="settings-section-label">${escapeHtml(t('关于'))}</h2>
       <section class="settings-card"><div><h3>${escapeHtml(t('关于'))}</h3><p>MenoRadio <span data-app-version>${escapeHtml(version)}</span> ${escapeHtml(t('· 开发者'))} <button type="button" class="settings-link" data-external="https://github.com/ichiris">@ichiris</button></p></div><div class="setting-actions"><button class="secondary-button" data-external="https://github.com/ichiris/MenoRadio">${escapeHtml(t('项目主页'))} ${icon('external')}</button><button class="secondary-button" data-route-link="settings-licenses">${escapeHtml(t('开源许可'))}</button><button class="secondary-button" data-check-update>${escapeHtml(t('检查更新'))}</button></div></section>
+      <div class="plugin-slot settings-plugin-slot" data-plugin-slot="settings-bottom"></div>
     </div>
   </div>`
+  const cardsHost = $('[data-plugin-settings-cards]', dom.page)
+  if (cardsHost && pluginCards.length) {
+    for (const card of pluginCards) {
+      const cardEl = document.createElement('section')
+      cardEl.className = 'settings-card plugin-custom-settings-card'
+      cardEl.dataset.pluginId = card.pluginId
+      try { card.render(cardEl) } catch (error) {
+        console.error(`[plugin:${card.pluginId}] Settings card render failed:`, error)
+        continue
+      }
+      cardsHost.appendChild(cardEl)
+    }
+  }
   bridge.app.version().then((value) => {
     if (state.route === 'settings') $('[data-app-version]', dom.page)?.replaceChildren(document.createTextNode(value))
   }).catch(() => {})
+}
+
+function renderPluginsSettings() {
+  if (!pluginUi) return renderSettings()
+  return pluginUi.renderSettingsPage({
+    dom,
+    escapeHtml,
+    attr,
+    icon,
+    t,
+    pageTitle,
+    bridge,
+    toast,
+    closeModal,
+    pluginsHost: plugins,
+  })
+}
+
+function renderPluginNavItems() {
+  const items = plugins?.getNavItems?.() || []
+  const byGroup = { discover: [], library: [], plugins: [] }
+  for (const item of items) {
+    if (item.group === 'discover') byGroup.discover.push(item)
+    else if (item.group === 'library') byGroup.library.push(item)
+    else byGroup.plugins.push(item)
+  }
+  const renderList = (entries) => entries.map((item) => {
+    const glyph = item.icon.trim().startsWith('<svg') ? item.icon : icon(item.icon || 'plugin')
+    const badge = item.badge ? `<small class="nav-item-badge">${escapeHtml(item.badge)}</small>` : ''
+    const routeAttr = item.route ? ` data-route="${attr(item.route)}"` : ''
+    const active = item.route && state.route === item.route ? ' active' : ''
+    return `<button type="button" class="nav-item${active}" data-plugin-nav-key="${attr(item.key)}"${routeAttr}>${glyph}<span>${escapeHtml(t(item.label))}</span>${badge}</button>`
+  }).join('')
+  const discoverEl = $('#pluginNavDiscover')
+  const libraryEl = $('#pluginNavLibrary')
+  const groupEl = $('#pluginNavGroup')
+  const pluginsEl = $('#pluginNavItems')
+  if (discoverEl) discoverEl.innerHTML = renderList(byGroup.discover)
+  if (libraryEl) libraryEl.innerHTML = renderList(byGroup.library)
+  if (pluginsEl) pluginsEl.innerHTML = renderList(byGroup.plugins)
+  if (groupEl) groupEl.hidden = byGroup.plugins.length === 0
 }
 
 async function renderOpenSourceLicenses() {
@@ -1997,27 +2114,80 @@ async function clearApplicationCache(button) {
 }
 
 async function renderRoute() {
+  if (typeof activeCustomRouteCleanup === 'function') {
+    const cleanup = activeCustomRouteCleanup
+    activeCustomRouteCleanup = null
+    try { cleanup() } catch {}
+  }
   setActiveNav(state.route)
   updateHistoryButtons()
   if (state.route !== 'playlist') state.currentPlaylist = null
-  switch (state.route) {
-    case 'home': return renderHome()
-    case 'search': return renderSearch(state.routePayload?.keywords || '', state.routePayload?.type || 1018)
-    case 'daily': return renderDaily()
-    case 'liked': return renderLiked()
-    case 'playlist': return renderPlaylist(state.routePayload)
-    case 'artist': return renderArtist(state.routePayload)
-    case 'album': return renderAlbum(state.routePayload)
-    case 'user': return renderUser(state.routePayload)
-    case 'user-connections': return renderUserConnections(state.routePayload)
-    case 'recent':
-      dom.page.innerHTML = `<div class="page-inner">${pageTitle(t('最近播放'), state.recent.length ? t('最近听过的 {count} 首歌', { count: state.recent.length }) : t('还没有播放记录'), state.recent.length ? `<button type="button" class="secondary-button" data-clear-recent>${escapeHtml(t('清空'))}</button>` : '')}${renderTrackTable(state.recent, { emptyDescription: t('播放过的歌曲会出现在这里。') })}</div>`
+
+  if (plugins) {
+    const before = await plugins.runHook('route:beforeRender', {
+      route: state.route,
+      payload: state.routePayload,
+      page: dom.page,
+      handled: false,
+    })
+    if (before?.handled) {
+      plugins.refreshSlots(dom.page)
+      plugins.emit('route:changed', { route: state.route, payload: state.routePayload }, { mirrorToBackend: true })
       return
-    case 'settings': return renderSettings()
-    case 'settings-floating': return renderFloatingLyricsSettings()
-    case 'settings-licenses': return renderOpenSourceLicenses()
-    default: return renderHome()
+    }
   }
+
+  let result
+  const customRoute = plugins?.getRoute?.(state.route)
+  if (customRoute) {
+    dom.page.innerHTML = `<div class="page-inner plugin-page" data-plugin-route="${attr(state.route)}"></div>`
+    const container = dom.page.firstElementChild
+    try {
+      const ret = await customRoute.render(container, state.routePayload, {
+        pageTitle,
+        renderTrackTable,
+        renderCards,
+        escapeHtml,
+        attr,
+        icon,
+        t,
+        navigate,
+        playTracks,
+        toast,
+      })
+      if (typeof ret === 'function') activeCustomRouteCleanup = ret
+      else if (customRoute.unmount) activeCustomRouteCleanup = () => customRoute.unmount(container)
+    } catch (error) {
+      renderError(t('插件页面加载失败'), error?.message || t('未知错误'), () => renderRoute())
+    }
+  } else {
+    switch (state.route) {
+      case 'home': result = await renderHome(); break
+      case 'search': result = await renderSearch(state.routePayload?.keywords || '', state.routePayload?.type || 1018); break
+      case 'daily': result = await renderDaily(); break
+      case 'liked': result = await renderLiked(); break
+      case 'playlist': result = await renderPlaylist(state.routePayload); break
+      case 'artist': result = await renderArtist(state.routePayload); break
+      case 'album': result = await renderAlbum(state.routePayload); break
+      case 'user': result = await renderUser(state.routePayload); break
+      case 'user-connections': result = await renderUserConnections(state.routePayload); break
+      case 'recent':
+        dom.page.innerHTML = `<div class="page-inner">${pageTitle(t('最近播放'), state.recent.length ? t('最近听过的 {count} 首歌', { count: state.recent.length }) : t('还没有播放记录'), state.recent.length ? `<button type="button" class="secondary-button" data-clear-recent>${escapeHtml(t('清空'))}</button>` : '')}${renderTrackTable(state.recent, { emptyDescription: t('播放过的歌曲会出现在这里。') })}</div>`
+        break
+      case 'settings': result = renderSettings(); break
+      case 'settings-floating': result = renderFloatingLyricsSettings(); break
+      case 'settings-plugins': result = await renderPluginsSettings(); break
+      case 'settings-licenses': result = await renderOpenSourceLicenses(); break
+      default: result = await renderHome(); break
+    }
+  }
+
+  if (plugins) {
+    plugins.refreshSlots(dom.page)
+    await plugins.runHook('route:afterRender', { route: state.route, payload: state.routePayload, page: dom.page })
+    plugins.emit('route:changed', { route: state.route, payload: state.routePayload }, { mirrorToBackend: true })
+  }
+  return result
 }
 
 function navigate(route, payload = null, record = true) {
@@ -2043,9 +2213,12 @@ function moveHistory(delta) {
 }
 
 function installPageTransitions() {
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
   const observer = new MutationObserver((mutations) => {
     if (!mutations.some((mutation) => mutation.type === 'childList' && mutation.target === dom.page)) return
+    plugins?.refreshSlots(dom.page)
+    plugins?.runSyncHook('page:rendered', { route: state.route, payload: state.routePayload, page: dom.page })
+    if (reducedMotion) return
     const content = dom.page.firstElementChild
     if (!content?.animate) return
     requestAnimationFrame(() => {
@@ -2834,28 +3007,49 @@ async function ensureAudioSource(track, generation = state.audioLoadGeneration, 
   const request = (async () => {
     try {
       // Reuse the already-resolved URL without preloading its audio body.
-      const preload = getAudioPreload(track, false)
-      const audioSource = preload
-        ? await preload.sourcePromise
-        : unwrap(await bridge.data.songUrl(track.id, state.audioQuality)).data?.[0]
+      const pluginAudio = plugins
+        ? await plugins.runHook('player:resolveAudioSource', {
+          track,
+          quality: state.audioQuality,
+          audioSource: null,
+          url: '',
+          useProxy: undefined,
+          handled: false,
+        })
+        : null
+      const preload = pluginAudio?.handled ? null : getAudioPreload(track, false)
+      const audioSource = pluginAudio?.handled
+        ? (pluginAudio.audioSource || { url: pluginAudio.url })
+        : preload
+          ? await preload.sourcePromise
+          : unwrap(await bridge.data.songUrl(track.id, state.audioQuality)).data?.[0]
       if (preload && upcomingAudioPreloads.get(preload.key) === preload) upcomingAudioPreloads.delete(preload.key)
       if (String(state.current?.id) !== trackId || generation !== state.audioLoadGeneration) return false
-      let url = audioSource?.url
+      let url = pluginAudio?.url || audioSource?.url
       if (!url) throw playbackError(t('这首歌暂时无法播放，可能需要会员或所在地区没有版权。'), 'unavailable')
       state.currentAudioSource = audioSource
-      state.trackReplayGainDb = replayGainDb(audioSource.gain)
+      state.trackReplayGainDb = replayGainDb(audioSource?.gain)
       applyEffectiveAudioVolume()
-      url = String(url).replace(/^http:/, 'https:')
-      state.currentAudioDirectUrl = url
-      if (state.mediaLoadingOptimization) {
+      if (/^http:\/\/[^/]*(?:music\.126\.net|music\.163\.com)/i.test(String(url))) {
+        url = String(url).replace(/^http:/, 'https:')
+      }
+      state.currentAudioDirectUrl = String(url)
+      const isHttpUrl = /^https?:/i.test(String(url))
+      const shouldProxy = state.mediaLoadingOptimization && isHttpUrl && pluginAudio?.useProxy !== false
+      if (shouldProxy) {
         // The main process cancels obsolete low-priority work before returning
         // this paced media source, so current playback never waits behind it.
-        url = await bridge.media.playbackUrl(url, {
-          size: audioSource.size,
-          br: audioSource.br,
-          time: audioSource.time,
-          duration: track.duration,
-        })
+        try {
+          url = await bridge.media.playbackUrl(url, {
+            size: audioSource?.size,
+            br: audioSource?.br,
+            time: audioSource?.time,
+            duration: track.duration,
+          })
+        } catch {
+          // Non-NetEase custom plugin URLs fall back cleanly to direct streaming.
+          url = state.currentAudioDirectUrl
+        }
       } else {
         void bridge.media.cancelPreload().catch(() => {})
         void bridge.media.cancelPlayback().catch(() => {})
@@ -2918,6 +3112,12 @@ async function seekCurrentTrack(seconds) {
 
 async function loadTrack(track, autoplay = true) {
   if (!track) return
+  if (plugins) {
+    const before = await plugins.runHook('player:beforeLoadTrack', { track, autoplay, cancel: false })
+    if (before?.cancel) return
+    if (before?.track) track = before.track
+    if (typeof before?.autoplay === 'boolean') autoplay = before.autoplay
+  }
   const generation = ++state.audioLoadGeneration
   state.playbackIntentPlaying = Boolean(autoplay)
   stopLyricsClock()
@@ -2928,6 +3128,7 @@ async function loadTrack(track, autoplay = true) {
   cancelPendingAudioPreloadsExcept(track)
   state.current = track
   state.queueIndex = currentQueueIndex()
+  plugins?.emit('player:track-changed', { track, queueIndex: state.queueIndex, autoplay }, { mirrorToBackend: true })
   state.activeLyric = -1
   state.focusLyric = 0
   state.lyrics = []
@@ -3024,6 +3225,9 @@ function updateNowPlaying(options = {}) {
   }
   refreshPlayingRows()
   renderQueue()
+  plugins?.runSyncHook('player:nowPlayingRender', { track, passive })
+  plugins?.refreshSlots(dom.immersive)
+  plugins?.refreshSlots(dom.playerBar)
 }
 
 function updateLikeButtonsOnly() {
@@ -3073,6 +3277,17 @@ function updatePlaybackBackdrop(track) {
 }
 
 function updateImmersiveBackdrop(url, fallbackUrl) {
+  if (plugins) {
+    const hooked = plugins.runSyncHook('player:backdropBeforeRender', {
+      url,
+      fallbackUrl,
+      track: state.current,
+      handled: false,
+    })
+    if (hooked?.handled) return
+    if (hooked?.url) url = hooked.url
+    if (hooked?.fallbackUrl !== undefined) fallbackUrl = hooked.fallbackUrl
+  }
   if (!url || state.backdropUrl === url) return
   state.backdropUrl = url
   const generation = ++state.backdropGeneration
@@ -3419,9 +3634,24 @@ async function fetchLyrics(track, generation = state.audioLoadGeneration) {
   let lastError = null
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const body = unwrap(await bridge.data.lyrics(track.id))
+      let body = null
+      if (plugins) {
+        const before = await plugins.runHook('lyrics:beforeFetch', { track, handled: false, body: null })
+        if (before?.handled) body = before.body || {}
+      }
+      if (!body) {
+        body = unwrap(await bridge.data.lyrics(track.id))
+      }
+      if (plugins) {
+        const after = await plugins.runHook('lyrics:afterFetch', { track, body })
+        if (after?.body) body = after.body
+      }
       if (state.current?.id !== track.id || generation !== state.audioLoadGeneration) return
-      const document = buildLyricDocument(body, wordHighlightEnabled())
+      let document = buildLyricDocument(body, wordHighlightEnabled())
+      if (plugins) {
+        const transformed = await plugins.runHook('lyrics:transformDocument', { track, document, body })
+        if (transformed?.document) document = transformed.document
+      }
       const merged = document.lines
       const explicitlyEmpty = body.nolyric === true || body.uncollected === true
       if (!merged.length && !explicitlyEmpty && attempt < 1) {
@@ -3473,7 +3703,12 @@ function renderLyrics(lines, status = 'ready') {
     const original = words
       ? words.map((word) => `<span class="lyric-word" data-start="${Number(word.time)}" data-end="${Number(word.time) + Number(word.duration || 0)}">${escapeHtml(word.text)}</span>`).join('')
       : escapeHtml(line.text)
-    return `<div class="lyric-line${words ? ' has-words' : ''}" data-lyric-index="${index}" data-time="${line.time}"><div class="lyric-content"><div class="lyric-original">${original}</div>${line.translation ? `<div class="lyric-translation translation">${escapeHtml(line.translation)}</div>` : ''}</div></div>`
+    let html = `<div class="lyric-line${words ? ' has-words' : ''}" data-lyric-index="${index}" data-time="${line.time}"><div class="lyric-content"><div class="lyric-original">${original}</div>${line.translation ? `<div class="lyric-translation translation">${escapeHtml(line.translation)}</div>` : ''}</div></div>`
+    if (plugins) {
+      const hooked = plugins.runSyncHook('lyrics:renderLine', { line, index, html, words: Boolean(words) })
+      if (typeof hooked?.html === 'string') html = hooked.html
+    }
+    return html
   }).join('')
   updateLyricVisibility()
   scheduleImmersiveFontWarmup()
@@ -3494,12 +3729,16 @@ function updateLyricVisibility() {
 function syncFloatingLyrics(force = false) {
   if (!bridge.floatingLyrics) return
   const line = state.activeLyric >= 0 ? state.lyrics[state.activeLyric] : null
-  const payload = {
+  let payload = {
     text: line?.text || '',
     translation: state.showTranslation ? line?.translation || '' : '',
     active: state.activeLyric >= 0,
     inPlayer: dom.immersive.classList.contains('open'),
     paused: dom.audio.paused,
+  }
+  if (plugins) {
+    const hooked = plugins.runSyncHook('lyrics:floatingPayload', { payload, line, track: state.current })
+    if (hooked?.payload) payload = hooked.payload
   }
   const key = JSON.stringify(payload)
   if (!force && key === state.floatingLyricsPayloadKey) return
@@ -3729,6 +3968,11 @@ function updateLyricEmphasis(nextActive, nextFocus, immediate = false, force = f
   if (activeChanged) {
     if (previousActive >= 0 && previousActive !== nextActive) animateLyricScale(lines[previousActive], 1, immediate)
     if (nextActive >= 0) animateLyricScale(lines[nextActive], 1.038, immediate)
+    plugins?.emit('lyrics:active-changed', {
+      index: nextActive,
+      previousIndex: previousActive,
+      line: nextActive >= 0 ? state.lyrics[nextActive] : null,
+    })
   }
   syncLyricWords()
 }
@@ -4510,6 +4754,13 @@ function showTrackMenu(anchor, track, point = null, { fromPlayer = false } = {})
   const playlistChoices = state.loggedIn
     ? ownPlaylists.filter((playlist) => String(playlist.id) !== playlistId).slice(0, 18)
     : []
+  const pluginTrackItems = plugins?.getTrackMenuItems?.(track, { fromPlayer, playlistId }) || []
+  const pluginMenuMarkup = pluginTrackItems.length
+    ? `<div class="track-menu-separator"></div>${pluginTrackItems.map((item) => {
+      const glyph = item.icon?.trim().startsWith('<svg') ? item.icon : icon(item.icon || 'plugin')
+      return `<button type="button" class="${item.danger ? 'danger' : ''}" data-plugin-track-menu="${attr(item.id)}">${glyph}<span>${escapeHtml(t(item.label))}</span></button>`
+    }).join('')}`
+    : ''
   dom.trackMenu.innerHTML = `<button type="button" class="track-menu-title" data-track-menu-action="copy-info" title="${attr(t('复制歌曲信息'))}" aria-label="${attr(t('复制歌曲信息：{name}', { name: track.name }))}">${escapeHtml(track.name)}</button>
     <button data-track-menu-action="${fromPlayer ? 'resume' : 'play'}" ${fromPlayer && !dom.audio.paused ? 'disabled' : ''}>${icon('play')}<span>${fromPlayer ? (dom.audio.paused ? t('继续播放') : t('正在播放')) : t('播放')}</span></button>
     <button data-track-menu-action="next">${icon('next')}<span>${escapeHtml(t('下一首播放'))}</span></button>
@@ -4519,7 +4770,7 @@ function showTrackMenu(anchor, track, point = null, { fromPlayer = false } = {})
     ${trackAlbum ? `<button data-track-album-id="${attr(trackAlbum.id)}" data-track-album-name="${attr(trackAlbum.name)}">${icon('album')}<span>${escapeHtml(t('专辑：{name}', { name: trackAlbum.name }))}</span></button>` : ''}
     ${playlistChoices.length ? `<button data-track-menu-action="choose-playlist">${icon('list')}<span>${escapeHtml(t('添加到歌单'))}</span><small>›</small></button>
       <div class="track-menu-playlists" data-menu-playlists hidden>${playlistChoices.map((playlist) => `<button data-add-playlist-id="${attr(playlist.id)}"><span>${escapeHtml(playlist.name)}</span></button>`).join('')}</div>` : ''}
-    ${canRemove ? `<div class="track-menu-separator"></div><button class="danger" data-track-menu-action="remove" data-current-playlist-id="${attr(playlistId)}"><span>${escapeHtml(t('从歌单中移除'))}</span></button>` : ''}`
+    ${canRemove ? `<div class="track-menu-separator"></div><button class="danger" data-track-menu-action="remove" data-current-playlist-id="${attr(playlistId)}"><span>${escapeHtml(t('从歌单中移除'))}</span></button>` : ''}${pluginMenuMarkup}`
   dom.trackMenu.classList.add('open')
   dom.trackMenu.setAttribute('aria-hidden', 'false')
   positionTrackMenu(anchor, point)
@@ -4530,10 +4781,17 @@ function showPlaylistMenu(anchor, playlist, point = null) {
   const owned = playlist.creatorId === String(state.profile?.userId || '')
   state.menuTrack = null
   state.menuPlaylist = playlist
+  const pluginPlaylistItems = plugins?.getPlaylistMenuItems?.(playlist, { owned }) || []
+  const pluginMenuMarkup = pluginPlaylistItems.length
+    ? `<div class="track-menu-separator"></div>${pluginPlaylistItems.map((item) => {
+      const glyph = item.icon?.trim().startsWith('<svg') ? item.icon : icon(item.icon || 'plugin')
+      return `<button type="button" class="${item.danger ? 'danger' : ''}" data-plugin-playlist-menu="${attr(item.id)}">${glyph}<span>${escapeHtml(t(item.label))}</span></button>`
+    }).join('')}`
+    : ''
   dom.trackMenu.innerHTML = `<div class="track-menu-title">${escapeHtml(playlist.name)}</div>
     ${owned ? `<button data-playlist-menu-action="edit">${icon('edit')}<span>${escapeHtml(t('编辑歌单信息'))}</span></button>
       <div class="track-menu-separator"></div><button class="danger" data-playlist-menu-action="delete">${icon('trash')}<span>${escapeHtml(t('删除歌单'))}</span></button>`
-      : `<button class="danger" data-playlist-menu-action="unsubscribe">${icon('heart')}<span>${escapeHtml(t('取消收藏'))}</span></button>`}`
+      : `<button class="danger" data-playlist-menu-action="unsubscribe">${icon('heart')}<span>${escapeHtml(t('取消收藏'))}</span></button>`}${pluginMenuMarkup}`
   dom.trackMenu.classList.add('open')
   dom.trackMenu.setAttribute('aria-hidden', 'false')
   positionTrackMenu(anchor, point)
@@ -4772,10 +5030,39 @@ function showImmersiveChrome() {
   state.immersiveChromeTimer = window.setTimeout(() => dom.immersive.classList.add('chrome-hidden'), 2400)
 }
 
+function renderImmersivePluginViewButtons() {
+  const buttonsHost = $('#immersivePluginViewButtons')
+  const viewsHost = $('#immersivePluginViews')
+  if (!buttonsHost || !viewsHost) return
+  const views = plugins?.getImmersiveViews?.() || []
+  const validIds = new Set(views.map((view) => view.id))
+  for (const [id, entry] of [...mountedImmersivePluginViews.entries()]) {
+    if (!validIds.has(id)) {
+      try { entry.cleanup?.() } catch {}
+      entry.panel.remove()
+      mountedImmersivePluginViews.delete(id)
+    }
+  }
+  buttonsHost.innerHTML = views.map((view) => {
+    const glyph = view.icon?.trim().startsWith('<svg') ? view.icon : icon(view.icon || 'plugin')
+    const active = state.immersiveView === view.id ? ' active' : ''
+    return `<button type="button" class="glass-button${active}" data-immersive-plugin-view="${attr(view.id)}" aria-label="${attr(t(view.label))}" title="${attr(t(view.label))}">${glyph}</button>`
+  }).join('')
+  if (!['lyrics', 'queue'].includes(state.immersiveView) && !validIds.has(state.immersiveView)) {
+    setImmersiveView('lyrics')
+  }
+}
+
 function setImmersiveView(view = 'lyrics') {
-  const nextView = view === 'queue' ? 'queue' : 'lyrics'
+  const pluginViews = plugins?.getImmersiveViews?.() || []
+  const pluginView = pluginViews.find((item) => item.id === view) || null
+  const nextView = view === 'queue' ? 'queue' : pluginView ? pluginView.id : 'lyrics'
   if (state.immersiveView === nextView && !dom.immersive.classList.contains('view-switching')) return
   const previousView = state.immersiveView
+  const previousPluginView = pluginViews.find((item) => item.id === previousView) || null
+  if (previousPluginView && previousPluginView !== pluginView) {
+    try { previousPluginView.onHide?.(mountedImmersivePluginViews.get(previousPluginView.id)?.panel) } catch {}
+  }
   const generation = ++state.immersiveViewGeneration
   state.immersiveView = nextView
   clearTimeout(state.immersiveViewTimer)
@@ -4785,6 +5072,7 @@ function setImmersiveView(view = 'lyrics') {
   state.immersiveViewPhaseTimer = window.setTimeout(() => {
     if (generation !== state.immersiveViewGeneration) return
     dom.immersive.classList.toggle('queue-view', nextView === 'queue')
+    dom.immersive.classList.toggle('plugin-view-active', Boolean(pluginView))
     dom.immersive.classList.remove('queue-leaving', 'lyrics-leaving')
   }, 180)
   state.immersiveViewTimer = window.setTimeout(() => {
@@ -4793,10 +5081,42 @@ function setImmersiveView(view = 'lyrics') {
     if (nextView !== 'queue') releaseClosedQueueDom()
   }, 420)
   const queueOpen = nextView === 'queue'
+  const pluginOpen = Boolean(pluginView)
   dom.immersiveQueuePanel.setAttribute('aria-hidden', String(!queueOpen))
-  $('#immersiveLyricsView').classList.toggle('active', !queueOpen)
+  const viewsHost = $('#immersivePluginViews')
+  if (viewsHost) {
+    viewsHost.setAttribute('aria-hidden', String(!pluginOpen))
+    for (const [id, entry] of mountedImmersivePluginViews.entries()) {
+      entry.panel.hidden = id !== nextView
+    }
+    if (pluginView) {
+      let mounted = mountedImmersivePluginViews.get(pluginView.id)
+      if (!mounted) {
+        const panel = document.createElement('div')
+        panel.className = 'immersive-plugin-view-pane'
+        panel.dataset.immersiveViewId = pluginView.id
+        viewsHost.appendChild(panel)
+        let cleanup = null
+        try {
+          const ret = pluginView.render(panel)
+          if (typeof ret === 'function') cleanup = ret
+        } catch (error) {
+          console.error(`[plugin:${pluginView.pluginId}] Immersive view render failed:`, error)
+        }
+        mounted = { panel, cleanup }
+        mountedImmersivePluginViews.set(pluginView.id, mounted)
+      }
+      mounted.panel.hidden = false
+      try { pluginView.onShow?.(mounted.panel) } catch {}
+    }
+  }
+  $('#immersiveLyricsView').classList.toggle('active', nextView === 'lyrics')
   $('#immersiveQueueView').classList.toggle('active', queueOpen)
+  $$('[data-immersive-plugin-view]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.immersivePluginView === nextView)
+  })
   if (queueOpen) renderQueue({ focusCurrent: true })
+  plugins?.emit('player:immersive-view-changed', { view: nextView, previousView })
 }
 
 async function setImmersiveFullScreen(value) {
@@ -5016,6 +5336,14 @@ function updateProfileUi() {
   profileButton.classList.add('interactive')
   profileButton.setAttribute('aria-disabled', 'false')
   profileButton.title = state.loggedIn ? t('打开我的主页') : t('登录网易云音乐')
+  plugins?.runSyncHook('auth:profileUi', {
+    loggedIn: state.loggedIn,
+    profile: state.profile,
+    button: profileButton,
+    nameElement: $('#profileName'),
+    hintElement: $('#profileHint'),
+    avatarElement: avatar,
+  })
 }
 
 async function loadAccount() {
@@ -5095,11 +5423,61 @@ function renderPlaylistNav(playlists) {
 
 function closeModal() {
   cancelApplicationResetHold()
+  if (activeLoginTabCleanups.length) {
+    const cleanups = activeLoginTabCleanups.splice(0)
+    for (const fn of cleanups) {
+      try { fn() } catch {}
+    }
+  }
+  if (typeof activePluginModalCleanup === 'function') {
+    const cleanup = activePluginModalCleanup
+    activePluginModalCleanup = null
+    try { cleanup() } catch {}
+  }
   state.loginGeneration += 1
   dom.modalLayer.classList.remove('open')
   dom.modalLayer.setAttribute('aria-hidden', 'true')
   setTimeout(() => { if (!dom.modalLayer.classList.contains('open')) dom.modalLayer.innerHTML = '' }, 220)
   if (pendingAutomaticRelease) window.setTimeout(flushPendingAutomaticUpdate, 240)
+}
+
+function showPluginModal(options = {}) {
+  closeModal()
+  const title = String(options.title || '')
+  const subtitle = String(options.subtitle || '')
+  const widthStyle = options.width ? ` style="width:${attr(String(options.width))}"` : ''
+  const actions = Array.isArray(options.actions) ? options.actions : []
+  dom.modalLayer.innerHTML = `<div class="modal plugin-custom-modal" role="dialog" aria-modal="true"${widthStyle}>
+    <div class="modal-header"><div>${title ? `<h2>${escapeHtml(title)}</h2>` : ''}${subtitle ? `<p>${escapeHtml(subtitle)}</p>` : ''}</div><button type="button" class="icon-button" data-close-modal aria-label="${attr(t('关闭'))}">${icon('close')}</button></div>
+    <div class="plugin-modal-body" data-plugin-modal-body></div>
+    ${actions.length ? `<div class="modal-actions" data-plugin-modal-actions>${actions.map((action, index) => `<button type="button" class="${action.primary ? 'primary-button' : action.danger ? 'danger-button' : 'secondary-button'}" data-plugin-modal-action="${index}">${escapeHtml(action.label || '')}</button>`).join('')}</div>` : ''}
+  </div>`
+  const body = $('[data-plugin-modal-body]', dom.modalLayer)
+  if (typeof options.content === 'string') body.innerHTML = options.content
+  else if (options.content instanceof Node) body.appendChild(options.content)
+  else if (typeof options.render === 'function') {
+    const cleanup = options.render(body, { close: closeModal })
+    if (typeof cleanup === 'function') activePluginModalCleanup = cleanup
+  }
+  if (typeof options.onClose === 'function') {
+    const prev = activePluginModalCleanup
+    activePluginModalCleanup = () => {
+      try { prev?.() } catch {}
+      options.onClose()
+    }
+  }
+  dom.modalLayer.classList.add('open')
+  dom.modalLayer.setAttribute('aria-hidden', 'false')
+  $$('[data-close-modal]', dom.modalLayer).forEach((button) => button.addEventListener('click', closeModal))
+  actions.forEach((action, index) => {
+    $(`[data-plugin-modal-action="${index}"]`, dom.modalLayer)?.addEventListener('click', () => {
+      if (typeof action.onClick === 'function') action.onClick({ close: closeModal, body })
+      else closeModal()
+    })
+  })
+  if (typeof options.onMount === 'function') {
+    try { options.onMount(body, { close: closeModal }) } catch {}
+  }
 }
 
 function showUpdateModal(release, { automatic = false } = {}) {
@@ -5282,26 +5660,80 @@ async function unsubscribePlaylist(playlist) {
 }
 
 function showLogin() {
+  if (plugins) {
+    const hooked = plugins.runSyncHook('auth:beforeShowLogin', { handled: false })
+    if (hooked?.handled) return
+    const override = plugins.getLoginModalOverride?.()
+    if (typeof override === 'function') {
+      const handled = override({
+        closeModal,
+        showPluginModal,
+        toast,
+        completeLogin: async (profile) => {
+          state.loggedIn = true
+          if (profile) state.profile = profile
+          closeModal()
+          await afterLogin()
+        },
+        reloadAccount: loadAccount,
+        auth: bridge.auth,
+      })
+      if (handled !== false) return
+    }
+  }
   const generation = ++state.loginGeneration
+  const extraTabs = plugins?.getLoginTabs?.() || []
+  const tabCount = 3 + extraTabs.length
+  const extraTabButtons = extraTabs.map((tab) =>
+    `<button type="button" data-login-tab="${attr(tab.key)}">${escapeHtml(t(tab.label))}</button>`
+  ).join('')
+  const extraTabPanels = extraTabs.map((tab) =>
+    `<div class="login-panel plugin-login-panel" data-login-panel="${attr(tab.key)}" hidden></div>`
+  ).join('')
   dom.modalLayer.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
     <div class="modal-header"><h2 id="loginTitle">${escapeHtml(t('登录网易云音乐'))}</h2><button class="icon-button" data-close-modal>${icon('close')}</button></div>
-    <div class="login-tabs"><button class="active" data-login-tab="qr">${escapeHtml(t('扫码'))}</button><button data-login-tab="account">${escapeHtml(t('账号'))}</button><button data-login-tab="cookie">Cookie</button></div>
+    <div class="login-tabs" style="--login-tab-count:${tabCount}"><button class="active" data-login-tab="qr">${escapeHtml(t('扫码'))}</button><button data-login-tab="account">${escapeHtml(t('账号'))}</button><button data-login-tab="cookie">Cookie</button>${extraTabButtons}</div>
     <div class="login-panel" data-login-panel="qr"><div class="qr-wrap"><span class="qr-loading">${escapeHtml(t('正在获取二维码…'))}</span></div><div class="qr-status"><strong>${escapeHtml(t('请稍候'))}</strong><span>${escapeHtml(t('正在连接网易云音乐'))}</span></div></div>
     <div class="login-panel" data-login-panel="account" hidden><form class="login-form" data-password-form><label class="login-field"><span>${escapeHtml(t('手机号或邮箱'))}</span><input name="account" type="text" autocomplete="username" spellcheck="false" required></label><label class="login-field"><span>${escapeHtml(t('密码'))}</span><input name="password" type="password" autocomplete="current-password" required></label><p class="password-note">${escapeHtml(t('密码仅用于本次登录，不会保存。若遇到网易云验证，请改用扫码。'))}</p><div class="modal-actions"><button class="primary-button" type="submit">${escapeHtml(t('登录'))}</button></div></form></div>
     <div class="login-panel" data-login-panel="cookie" hidden><p class="cookie-help">${escapeHtml(t('粘贴已登录网页的 Cookie，至少包含 {name}。', { name: 'MUSIC_U' }))}</p><textarea class="cookie-input" placeholder="MUSIC_U=...; NMTID=..."></textarea><div class="modal-actions"><button class="secondary-button" data-cookie-help>${escapeHtml(t('获取方法'))} ${icon('external')}</button><button class="primary-button" data-import-cookie>${escapeHtml(t('登录'))}</button></div></div>
+    ${extraTabPanels}
   </div>`
   dom.modalLayer.classList.add('open')
   dom.modalLayer.setAttribute('aria-hidden', 'false')
-  bindLoginModal(generation)
+  bindLoginModal(generation, extraTabs)
   beginQrLogin(generation)
 }
 
-function bindLoginModal(generation) {
+function bindLoginModal(generation, extraTabs = []) {
   $('[data-close-modal]', dom.modalLayer).addEventListener('click', closeModal)
   $$('[data-login-tab]', dom.modalLayer).forEach((tab) => tab.addEventListener('click', () => {
     $$('[data-login-tab]', dom.modalLayer).forEach((button) => button.classList.toggle('active', button === tab))
     $$('[data-login-panel]', dom.modalLayer).forEach((panel) => panel.hidden = panel.dataset.loginPanel !== tab.dataset.loginTab)
   }))
+  const authHelpers = {
+    closeModal,
+    toast,
+    auth: bridge.auth,
+    reloadAccount: loadAccount,
+    completeLogin: async (profile) => {
+      state.loggedIn = true
+      if (profile) state.profile = profile
+      closeModal()
+      await afterLogin()
+    },
+  }
+  for (const tab of extraTabs) {
+    const panel = $(`[data-login-panel="${CSS.escape(tab.key)}"]`, dom.modalLayer)
+    if (!panel) continue
+    try {
+      const cleanup = tab.render(panel, authHelpers)
+      if (typeof cleanup === 'function') activeLoginTabCleanups.push(cleanup)
+      else if (tab.unmount) activeLoginTabCleanups.push(() => tab.unmount(panel))
+    } catch (error) {
+      console.error(`[plugin:${tab.pluginId}] Login tab render failed:`, error)
+      panel.innerHTML = `<p class="password-note">${escapeHtml(error?.message || t('登录面板加载失败'))}</p>`
+    }
+  }
   $('[data-cookie-help]', dom.modalLayer).addEventListener('click', () => bridge.app.openExternal('https://github.com/GH4NG/LyricEaseLoginHelper#获取-cookie-信息'))
   $('[data-password-form]', dom.modalLayer).addEventListener('submit', async (event) => {
     event.preventDefault()
@@ -5405,10 +5837,15 @@ async function afterLogin() {
     loadUserPlaylists(state.profile.userId),
     loadLikedSongs(state.profile.userId),
   ])
+  plugins?.emit('auth:login', { loggedIn: state.loggedIn, profile: state.profile })
   if (['home', 'liked', 'daily', 'settings'].includes(state.route)) renderRoute()
 }
 
 async function logout() {
+  if (plugins) {
+    const before = await plugins.runHook('auth:beforeLogout', { cancel: false })
+    if (before?.cancel) return
+  }
   await bridge.auth.logout()
   state.loggedIn = false
   state.profile = null
@@ -5418,6 +5855,7 @@ async function logout() {
   state.dailyRecommendation = null
   updateProfileUi()
   renderPlaylistNav([])
+  plugins?.emit('auth:logout', { loggedIn: false, profile: null })
   toast(t('已从本机移除登录会话'))
   navigate('home')
 }
@@ -5544,7 +5982,21 @@ function bindEvents() {
   $('#closeImmersive').addEventListener('click', () => openImmersive(false))
   $('#immersiveLyricsView').addEventListener('click', () => setImmersiveView('lyrics'))
   $('#immersiveQueueView').addEventListener('click', () => setImmersiveView('queue'))
+  $('#immersivePluginViewButtons')?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-immersive-plugin-view]')
+    if (button) setImmersiveView(button.dataset.immersivePluginView)
+  })
   $('#immersiveFullScreen').addEventListener('click', () => setImmersiveFullScreen(!state.fullScreen))
+  if (typeof MutationObserver === 'function') {
+    let lastImmersiveOpen = dom.immersive.classList.contains('open')
+    new MutationObserver(() => {
+      const isOpen = dom.immersive.classList.contains('open')
+      if (isOpen !== lastImmersiveOpen) {
+        lastImmersiveOpen = isOpen
+        plugins?.emit('player:immersive-toggle', { open: isOpen }, { mirrorToBackend: true })
+      }
+    }).observe(dom.immersive, { attributes: true, attributeFilter: ['class'] })
+  }
   dom.immersive.addEventListener('pointermove', showImmersiveChrome)
   dom.immersive.addEventListener('pointerdown', showImmersiveChrome)
   $('#immersiveArtist').addEventListener('click', (event) => {
@@ -5660,6 +6112,7 @@ function bindEvents() {
     setPlayIcons(true)
     reportPlaybackBuffer(true)
     startLyricsClock()
+    plugins?.emit('player:play', { track: state.current, currentTime: dom.audio.currentTime || 0 }, { mirrorToBackend: true })
   })
   dom.audio.addEventListener('playing', () => {
     if (!state.playbackIntentPlaying) {
@@ -5684,6 +6137,7 @@ function bindEvents() {
     stopLyricsClock()
     reportPlaybackBuffer(true)
     syncFloatingLyrics(true)
+    plugins?.emit('player:pause', { track: state.current, currentTime: dom.audio.currentTime || 0 }, { mirrorToBackend: true })
   })
   dom.audio.addEventListener('waiting', () => {
     state.playbackStarving = true
@@ -5704,6 +6158,7 @@ function bindEvents() {
     if (completedPendingSeek) updateActiveLyric(dom.audio.currentTime || 0, false, true)
     if (state.playbackIntentPlaying && !dom.audio.paused) startLyricsClock()
     else syncLyricWords()
+    plugins?.emit('player:seek', { track: state.current, currentTime: dom.audio.currentTime || 0 })
   })
   dom.audio.addEventListener('progress', () => reportPlaybackBuffer())
   dom.audio.addEventListener('loadedmetadata', () => {
@@ -5712,8 +6167,14 @@ function bindEvents() {
     if (!state.timelineScrubbing) updatePlaybackPositionUi(playbackClockTime(), playbackDuration())
   })
   dom.audio.addEventListener('ratechange', startLyricsClock)
-  dom.audio.addEventListener('volumechange', updateVolumeUi)
-  dom.audio.addEventListener('ended', onTrackEnded)
+  dom.audio.addEventListener('volumechange', () => {
+    updateVolumeUi()
+    plugins?.emit('player:volumechange', { volume: state.userVolume, muted: dom.audio.muted })
+  })
+  dom.audio.addEventListener('ended', () => {
+    plugins?.emit('player:ended', { track: state.current })
+    void onTrackEnded()
+  })
   dom.audio.addEventListener('timeupdate', () => {
     finishPendingAudioSeek()
     const actualCurrent = dom.audio.currentTime || 0
@@ -5736,6 +6197,7 @@ function bindEvents() {
     updatePlaybackPositionUi(current, duration)
     updateActiveLyric(current)
     reportPlaybackBuffer()
+    plugins?.emit('player:timeupdate', { currentTime: current, duration, track: state.current })
     if ('mediaSession' in navigator && Number.isFinite(duration) && duration > 0) {
       try { navigator.mediaSession.setPositionState({ duration, playbackRate: dom.audio.playbackRate, position: Math.min(current, duration) }) } catch {}
     }
@@ -6135,6 +6597,19 @@ function bindEvents() {
   dom.trackMenu.addEventListener('click', async (event) => {
     event.stopPropagation()
     const playlist = state.menuPlaylist
+    const pluginPlaylistItem = event.target.closest('[data-plugin-playlist-menu]')
+    if (pluginPlaylistItem && playlist) {
+      const itemId = pluginPlaylistItem.dataset.pluginPlaylistMenu
+      const owned = playlist.creatorId === String(state.profile?.userId || '')
+      const entry = (plugins?.getPlaylistMenuItems?.(playlist, { owned }) || []).find((item) => item.id === itemId)
+      hideTrackMenu()
+      if (entry) {
+        try { await entry.onClick(playlist, { owned }) } catch (error) {
+          toast(error?.message || t('插件操作失败'), t('操作失败'), 'error')
+        }
+      }
+      return
+    }
     const playlistAction = event.target.closest('[data-playlist-menu-action]')
     if (playlistAction && playlist) {
       const action = playlistAction.dataset.playlistMenuAction
@@ -6145,6 +6620,18 @@ function bindEvents() {
       return
     }
     const track = state.menuTrack
+    const pluginTrackItem = event.target.closest('[data-plugin-track-menu]')
+    if (pluginTrackItem && track) {
+      const itemId = pluginTrackItem.dataset.pluginTrackMenu
+      const entry = (plugins?.getTrackMenuItems?.(track, {}) || []).find((item) => item.id === itemId)
+      hideTrackMenu()
+      if (entry) {
+        try { await entry.onClick(track, { route: state.route }) } catch (error) {
+          toast(error?.message || t('插件操作失败'), t('操作失败'), 'error')
+        }
+      }
+      return
+    }
     const artistLink = event.target.closest('[data-track-artist-id]')
     if (artistLink && track) {
       const payload = { id: artistLink.dataset.trackArtistId, name: artistLink.dataset.trackArtistName || t('歌手') }
@@ -6232,6 +6719,14 @@ function bindEvents() {
       toggleQueue(false, { source: 'outside', focusCurrent: false })
     }
     if (!event.target.closest('#trackMenu, .track-more, .playlist-nav-more')) hideTrackMenu()
+    const pluginNav = event.target.closest('[data-plugin-nav-key]')
+    if (pluginNav) {
+      const item = (plugins?.getNavItems?.() || []).find((entry) => entry.key === pluginNav.dataset.pluginNavKey)
+      if (item?.onClick) {
+        try { item.onClick({ navigate }) } catch (error) { console.error(`[plugin:${item.pluginId}] nav onClick failed:`, error) }
+        return
+      }
+    }
     const nav = event.target.closest('[data-route]')
     if (nav) {
       if (nav.dataset.route === 'radio') startPrivateRadio()
@@ -6425,6 +6920,7 @@ function bindEvents() {
   })
   document.addEventListener('dragend', handleTrackDragEnd)
   document.addEventListener('keydown', (event) => {
+    if (plugins?.handleKeydown?.(event)) return
     const typing = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
       event.preventDefault()
@@ -6714,10 +7210,12 @@ function onPageClick(event) {
       else changeLanguage(value)
       return
     }
-    if (name === 'player-style' && playerStyles.some(([style]) => style === value)) {
+    if (name === 'player-style' && allPlayerStyles().some(([style]) => style === value)) {
       const legacy = value === 'legacy'
-      if (state.legacyPlayer !== legacy) {
+      if (state.playerStyle !== value || state.legacyPlayer !== legacy) {
+        state.playerStyle = value
         state.legacyPlayer = legacy
+        localStorage.setItem('menoradio.playerStyle', value)
         localStorage.setItem('menoradio.legacyPlayer', String(legacy))
         $$('[data-modern-player-setting]', dom.page).forEach((card) => { card.hidden = legacy })
         refreshPlayerStyle({ lyrics: true, backdrop: true })
@@ -6732,7 +7230,7 @@ function onPageClick(event) {
       localStorage.setItem('menoradio.audioQuality', value)
       updateChoicePicker(control, value)
     }
-    if (name === 'theme' && themes.some(([optionValue]) => optionValue === value)) {
+    if (name === 'theme' && allThemes().some(([optionValue]) => optionValue === value)) {
       state.theme = value
       localStorage.setItem('menoradio.theme', value)
       applyTheme()
@@ -6786,6 +7284,110 @@ function onPageClick(event) {
   $$('.track-row.selected', dom.page).forEach((item) => item.classList.remove('selected'))
 }
  
+function createPluginHostBinding() {
+  const actions = {
+    toast,
+    navigate,
+    renderRoute,
+    renderSettings,
+    showPluginModal,
+    closeModal,
+    showLogin,
+    afterLogin,
+    logout,
+    loadAccount,
+    updateProfileUi,
+    renderPlaylistNav,
+    updateNowPlaying,
+    renderQueue,
+    renderLyrics,
+    updateImmersiveBackdrop,
+    applyDisplaySettings,
+    applyTheme,
+    refreshPlayerStyle,
+    playbackDuration,
+    togglePlayback,
+    play: async () => {
+      if (dom.audio.paused) return togglePlayback()
+    },
+    pause: () => {
+      state.playbackIntentPlaying = false
+      dom.audio.pause()
+    },
+    nextTrack,
+    seekCurrentTrack,
+    setVolume,
+    toggleMute,
+    playTracks,
+    queueTrackNext,
+    insertTrackIntoQueue,
+    removeQueueTrack,
+    clearPlaybackQueue,
+    openImmersive,
+    setImmersiveView,
+    setTheme: (themeId) => {
+      if (!allThemes().some(([id]) => id === themeId)) return false
+      state.theme = themeId
+      localStorage.setItem('menoradio.theme', themeId)
+      applyTheme()
+      if (state.route === 'settings') renderSettings()
+      return true
+    },
+    setCustomLyrics: (lines, breaks = []) => {
+      state.lyrics = Array.isArray(lines) ? lines : []
+      state.lyricBreaks = Array.isArray(breaks) ? breaks : []
+      renderLyrics(state.lyrics, state.lyrics.length ? 'ready' : 'empty')
+    },
+  }
+  return {
+    state,
+    dom,
+    actions,
+    getThemes: () => allThemes().map(([id, label]) => ({ id, label })),
+    onThemesChanged: () => {
+      applyTheme()
+      if (state.route === 'settings') renderSettings()
+    },
+    onPlayerStylesChanged: () => {
+      applyPlayerStyleSettings()
+      if (state.route === 'settings') renderSettings()
+    },
+    onFontsChanged: () => {
+      if (state.route === 'settings') renderFontOptions($('[data-font-search]', dom.page)?.value || '', true)
+      if (state.route === 'settings-floating') renderFloatingFontOptions($('[data-floating-font-search]', dom.page)?.value || '', true)
+    },
+    onNavItemsChanged: () => {
+      renderPluginNavItems()
+      setActiveNav(state.route)
+    },
+    onImmersiveViewsChanged: () => {
+      renderImmersivePluginViewButtons()
+    },
+  }
+}
+
+async function initializePluginSystem() {
+  if (!plugins) return
+  plugins.onHostChange(() => {
+    renderPluginNavItems()
+    renderImmersivePluginViewButtons()
+    if (state.route === 'settings-plugins') {
+      void renderPluginsSettings()
+    }
+  })
+  try {
+    await plugins.initialize(createPluginHostBinding())
+  } catch (error) {
+    console.warn('[plugins] Plugin system initialization encountered an error:', error)
+  } finally {
+    pluginsReady = true
+    applyDisplaySettings()
+    renderPluginNavItems()
+    renderImmersivePluginViewButtons()
+    plugins.refreshSlots(document)
+  }
+}
+
 async function init() {
   const initializationStarted = performance.now()
   // This setting existed briefly in older builds. The limiter and its UI are
@@ -6797,6 +7399,7 @@ async function init() {
   bindEvents()
   await restorePageZoom()
   applyDisplaySettings()
+  await initializePluginSystem()
   try {
     const snapshot = await bridge.floatingLyrics.state()
     state.floatingLyrics = { ...state.floatingLyrics, ...(snapshot?.config || {}) }

@@ -7,6 +7,8 @@
   ])
   const storageKey = 'menoradio.language'
   const dictionaries = new Map()
+  const overlayDictionaries = new Map() // code -> Array<Map>
+  const languageListeners = new Set()
   const staticLabels = []
   const valid = (value) => languages.some(([code]) => code === value)
   let locale = 'zh-CN'
@@ -19,9 +21,45 @@
     dictionaries.set(code, new Map(Object.entries(entries)))
   }
 
+  function extend(code, entries) {
+    if (!code || !entries || typeof entries !== 'object') return () => {}
+    let list = overlayDictionaries.get(code)
+    if (!list) {
+      list = []
+      overlayDictionaries.set(code, list)
+    }
+    const map = new Map(Object.entries(entries))
+    list.push(map)
+    return () => {
+      const current = overlayDictionaries.get(code)
+      if (!current) return
+      const index = current.indexOf(map)
+      if (index >= 0) current.splice(index, 1)
+      if (!current.length) overlayDictionaries.delete(code)
+    }
+  }
+
+  function onChange(listener) {
+    if (typeof listener !== 'function') return () => {}
+    languageListeners.add(listener)
+    return () => languageListeners.delete(listener)
+  }
+
   function t(key, params = {}) {
     if (typeof key !== 'string') return key
-    const message = dictionaries.get(locale)?.get(key) ?? key
+    let message
+    const overlays = overlayDictionaries.get(locale)
+    if (overlays?.length) {
+      for (let index = overlays.length - 1; index >= 0; index -= 1) {
+        if (overlays[index].has(key)) {
+          message = overlays[index].get(key)
+          break
+        }
+      }
+    }
+    if (message === undefined) {
+      message = dictionaries.get(locale)?.get(key) ?? key
+    }
     return message.replace(/\{(\w+)\}/g, (placeholder, name) =>
       Object.hasOwn(params, name) ? String(params[name] ?? '') : placeholder
     )
@@ -64,7 +102,10 @@
     if (persist) {
       try { root.localStorage?.setItem(storageKey, locale) } catch {}
     }
+    for (const listener of languageListeners) {
+      try { listener(locale) } catch {}
+    }
   }
 
-  root.MenoRadioI18n = { languages, register, t, setLanguage, initializeDocument, get locale() { return locale } }
+  root.MenoRadioI18n = { languages, register, extend, onChange, t, setLanguage, initializeDocument, get locale() { return locale } }
 })(window)

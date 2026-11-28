@@ -3,7 +3,8 @@ node_modules/
 release/
 dist/
 out/
-build/
+build/*
+!build/installer.nsh
 coverage/
 tests/
 

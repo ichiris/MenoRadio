@@ -10,7 +10,7 @@ function ignoreClosedOutputPipe(stream) {
 ignoreClosedOutputPipe(process.stdout)
 ignoreClosedOutputPipe(process.stderr)
 
-const { app, BrowserWindow, clipboard, ipcMain, safeStorage, shell, nativeTheme, session, screen, net, protocol } = require('electron')
+const { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, net, Notification, protocol, safeStorage, screen, session, shell, Tray } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const crypto = require('node:crypto')
@@ -37,24 +37,39 @@ const {
   requestedApiAudioQuality,
 } = require('./audio-quality.cjs')
 const { createLyricsLoader } = require('./lyrics-loader.cjs')
+const { createPluginManager } = require('./plugin-manager.cjs')
 
 const playbackProtocolScheme = 'menoradio-media'
-protocol.registerSchemesAsPrivileged([{
-  scheme: playbackProtocolScheme,
-  privileges: {
-    standard: true,
-    secure: true,
-    stream: true,
-    supportFetchAPI: true,
-    corsEnabled: true,
+const pluginProtocolScheme = 'menoradio-plugin'
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: playbackProtocolScheme,
+    privileges: {
+      standard: true,
+      secure: true,
+      stream: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+    },
   },
-}])
+  {
+    scheme: pluginProtocolScheme,
+    privileges: {
+      standard: true,
+      secure: true,
+      stream: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+    },
+  },
+])
 
 const execFileAsync = promisify(execFile)
 
 let musicApi
 let mainWindow
 let floatingLyricsWindow
+let pluginManager = null
 let floatingLyricsSaveTimer
 let floatingLyricsShowTimer
 let floatingLyricsShowNotBefore = 0
@@ -282,15 +297,23 @@ function cancelPlaybackMediaSource() {
   return true
 }
 
-function playbackSourceUrl(payload = {}) {
+async function playbackSourceUrl(payload = {}) {
   cancelMediaPreload()
   cancelPlaybackMediaSource()
-  const url = validateMediaPreloadUrl(payload.url)
+  const customStream = pluginManager ? await pluginManager.resolveStreamProvider(payload) : null
+  if (customStream?.directUrl) {
+    return String(customStream.directUrl)
+  }
+  const url = customStream?.readRange || customStream?.response
+    ? String(payload.url || 'plugin://stream')
+    : validateMediaPreloadUrl(customStream?.url || payload.url)
   const token = crypto.randomUUID()
   playbackMediaSource = {
     token,
     url,
-    size: Math.max(0, Number(payload.size) || 0),
+    customStream: customStream?.readRange || customStream?.response ? customStream : null,
+    contentType: customStream?.contentType || '',
+    size: Math.max(0, Number(customStream?.size ?? payload.size) || 0),
     cruiseBytesPerSecond: effectivePlaybackBytesPerSecond(payload),
     burstBytesPerSecond: playbackBurstBytesPerSecond(payload),
     rangeMinimumBytes: playbackRangeMinimumBytes(payload),
@@ -654,6 +677,11 @@ function registerPlaybackProtocol() {
     if (!source || source.cancelled || parsed.hostname !== 'playback' || token !== source.token) {
       return new Response(null, { status: 404 })
     }
+    if (source.customStream?.response) {
+      return Promise.resolve()
+        .then(() => source.customStream.response(request, source))
+        .catch(() => new Response(null, { status: 502 }))
+    }
     if (request.method === 'HEAD') {
       return new Response(null, {
         status: 200,
@@ -662,6 +690,21 @@ function registerPlaybackProtocol() {
           ...(source.size > 0 ? { 'Content-Length': String(source.size) } : {}),
         },
       })
+    }
+    if (source.customStream?.readRange) {
+      return Promise.resolve().then(async () => {
+        const rangeHeader = request.headers.get('range') || ''
+        const requested = requestedByteRange(rangeHeader || 'bytes=0-', source.size)
+        const result = await source.customStream.readRange(requested.start, requested.end, source)
+        const bytes = Buffer.isBuffer(result?.bytes) ? result.bytes : Buffer.from(result?.bytes || [])
+        const total = Number(result?.total ?? source.size ?? bytes.length)
+        const end = requested.start + bytes.length - 1
+        const partial = Boolean(rangeHeader) || requested.start > 0
+        return new Response(bytes, {
+          status: partial ? 206 : 200,
+          headers: playbackResponseHeaders(source, requested.start, end, total, partial),
+        })
+      }).catch(() => new Response(null, { status: 502 }))
     }
     const task = Promise.resolve()
       .then(() => readSegmentedPlayback(source, request))
@@ -675,11 +718,23 @@ function registerPlaybackProtocol() {
   })
 }
 
+function registerPluginProtocol() {
+  protocol.handle(pluginProtocolScheme, (request) => {
+    if (!pluginManager) return new Response(null, { status: 404 })
+    return pluginManager.handleProtocolRequest(request)
+  })
+}
+
 function validateMediaPreloadUrl(value) {
   const url = new URL(String(value || ''))
-  if (url.protocol !== 'https:') throw new Error('Unsupported media preload URL')
+  const pluginAllowed = Boolean(pluginManager?.isMediaHostAllowed(url))
+  if (url.protocol !== 'https:' && !(pluginAllowed && url.protocol === 'http:')) {
+    throw new Error('Unsupported media preload URL')
+  }
   const host = url.hostname.toLowerCase()
-  if (!host.endsWith('music.126.net') && !host.endsWith('music.163.com')) throw new Error('Unsupported media preload host')
+  if (!host.endsWith('music.126.net') && !host.endsWith('music.163.com') && !pluginAllowed) {
+    throw new Error('Unsupported media preload host')
+  }
   return url.toString()
 }
 
@@ -795,9 +850,14 @@ async function reserveThumbnailBandwidth(byteLength) {
 
 function validateThumbnailUrl(value) {
   const url = new URL(String(value || ''))
-  if (url.protocol !== 'https:') throw new Error('Unsupported thumbnail URL')
+  const pluginAllowed = Boolean(pluginManager?.isMediaHostAllowed(url))
+  if (url.protocol !== 'https:' && !(pluginAllowed && url.protocol === 'http:')) {
+    throw new Error('Unsupported thumbnail URL')
+  }
   const host = url.hostname.toLowerCase()
-  if (!host.endsWith('music.126.net') && !host.endsWith('music.163.com')) throw new Error('Unsupported thumbnail host')
+  if (!host.endsWith('music.126.net') && !host.endsWith('music.163.com') && !pluginAllowed) {
+    throw new Error('Unsupported thumbnail host')
+  }
   return url.toString()
 }
 
@@ -851,7 +911,16 @@ async function downloadThumbnail(url, forceRefresh = false) {
   }
 }
 
-function getThumbnail(value, forceRefresh = false) {
+async function getThumbnail(value, forceRefresh = false) {
+  if (pluginManager) {
+    const provided = await pluginManager.resolveThumbnailProvider(value)
+    if (provided?.bytes) {
+      return {
+        mimeType: provided.mimeType || 'image/jpeg',
+        bytes: provided.bytes instanceof Uint8Array ? provided.bytes : Uint8Array.from(provided.bytes),
+      }
+    }
+  }
   const url = validateThumbnailUrl(value)
   if (forceRefresh) thumbnailCache.delete(url)
   const cached = thumbnailCache.get(url)
@@ -1117,6 +1186,7 @@ function createFloatingLyricsWindow() {
     if (!floatingLyricsShouldShow()) floatingLyricsWindow?.hide()
   })
   floatingLyricsWindow.on('closed', () => { floatingLyricsWindow = null })
+  pluginManager?.emitEvent('window:floating-created', floatingLyricsWindow)
   return floatingLyricsWindow
 }
 
@@ -1198,10 +1268,13 @@ function loadSession() {
 }
 
 function saveSession(cookie, profile = sessionProfile) {
+  const wasLoggedIn = Boolean(sessionCookie)
   sessionCookie = cookie || ''
   if (!sessionCookie) {
     sessionProfile = null
     try { fs.unlinkSync(sessionPath()) } catch {}
+    pluginManager?.emitEvent('auth:session-changed', { loggedIn: false, profile: null })
+    if (wasLoggedIn) pluginManager?.emitEvent('auth:logout', { loggedIn: false, profile: null })
     return
   }
   sessionProfile = profile && profile.userId ? {
@@ -1216,6 +1289,8 @@ function saveSession(cookie, profile = sessionProfile) {
     : Buffer.from(sessionCookie, 'utf8').toString('base64')
   fs.mkdirSync(path.dirname(sessionPath()), { recursive: true })
   fs.writeFileSync(sessionPath(), JSON.stringify({ version: 2, protected: canProtect, value, profile: sessionProfile }), 'utf8')
+  pluginManager?.emitEvent('auth:session-changed', { loggedIn: true, profile: sessionProfile })
+  if (!wasLoggedIn) pluginManager?.emitEvent('auth:login', { loggedIn: true, profile: sessionProfile })
 }
 
 function normalizeResult(result) {
@@ -1224,12 +1299,54 @@ function normalizeResult(result) {
 }
 
 async function callApi(name, params = {}, includeCookie = true) {
-  const fn = api()[name]
-  if (typeof fn !== 'function') throw new Error(`API method unavailable: ${name}`)
-  const query = { ...params, timestamp: Date.now() }
-  if (includeCookie && sessionCookie) query.cookie = sessionCookie
-  const result = await fn(query)
-  return normalizeResult(result)
+  let reqName = name
+  let reqParams = params && typeof params === 'object' ? { ...params } : {}
+  let reqIncludeCookie = includeCookie
+
+  if (pluginManager) {
+    const before = await pluginManager.runHook('api:before', {
+      name: reqName,
+      params: reqParams,
+      includeCookie: reqIncludeCookie,
+      handled: false,
+      cancel: false,
+    })
+    if (before.cancel) throw before.error || new Error(`API request cancelled: ${reqName}`)
+    if (before.handled) return before.result
+    reqName = before.name || reqName
+    reqParams = before.params || reqParams
+    reqIncludeCookie = before.includeCookie !== false
+  }
+
+  const fn = api()[reqName]
+  if (typeof fn !== 'function') throw new Error(`API method unavailable: ${reqName}`)
+  const query = { ...reqParams, timestamp: Date.now() }
+  if (reqIncludeCookie && sessionCookie) query.cookie = sessionCookie
+  try {
+    const rawResult = await fn(query)
+    let normalized = normalizeResult(rawResult)
+    if (pluginManager) {
+      const after = await pluginManager.runHook('api:after', {
+        name: reqName,
+        params: reqParams,
+        result: normalized,
+      })
+      normalized = after.result
+    }
+    return normalized
+  } catch (error) {
+    if (pluginManager) {
+      const recovered = await pluginManager.runHook('api:error', {
+        name: reqName,
+        params: reqParams,
+        error,
+        handled: false,
+      })
+      if (recovered.handled) return recovered.result
+      throw recovered.error || error
+    }
+    throw error
+  }
 }
 
 const lyricsLoader = createLyricsLoader({
@@ -1275,7 +1392,7 @@ async function guarded(work, fallback = null) {
   try {
     return { ok: true, data: await work() }
   } catch (error) {
-    return { ok: false, error: safeMessage(error), data: fallback }
+    return { ok: false, error: safeMessage(error), code: error?.code || '', data: fallback }
   }
 }
 
@@ -1383,6 +1500,7 @@ function createWindow() {
   })
 
   if (isDev) mainWindow.webContents.openDevTools({ mode: 'detach' })
+  pluginManager?.emitEvent('window:main-created', mainWindow)
 
   const screenshotArg = process.argv.find((argument) => argument.startsWith('--screenshot='))
   const previewArg = process.argv.find((argument) => argument.startsWith('--preview='))
@@ -1564,37 +1682,209 @@ function createWindow() {
   }
 }
 
+function handleIpc(channel, handler) {
+  ipcMain.handle(channel, (event, payload) => {
+    if (pluginManager) return pluginManager.wrapIpcHandler(channel, handler)(event, payload)
+    return handler(event, payload)
+  })
+}
+
+function broadcastToWindows(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload)
+  }
+  if (floatingLyricsWindow && !floatingLyricsWindow.isDestroyed()) {
+    floatingLyricsWindow.webContents.send(channel, payload)
+  }
+}
+
+function initPluginManager() {
+  pluginManager = createPluginManager({
+    appVersion: app.getVersion(),
+    userDataDir: app.getPath('userData'),
+    protocolScheme: pluginProtocolScheme,
+    host: {
+      callApi,
+      rawApi: () => api(),
+      auth: {
+        getSession: () => ({
+          loggedIn: Boolean(sessionCookie),
+          profile: sessionProfile ? { ...sessionProfile } : null,
+          cookie: sessionCookie,
+        }),
+        setSession: (cookie, profile) => {
+          saveSession(cookie, profile)
+          return { loggedIn: Boolean(sessionCookie), profile: sessionProfile }
+        },
+        clearSession: () => {
+          saveSession('')
+          return { loggedIn: false, profile: null }
+        },
+      },
+      floatingLyrics: {
+        getState: () => ({ config: floatingLyricsState?.config || null, bounds: floatingLyricsState?.bounds || null }),
+        configure: (patch) => configureFloatingLyrics(patch),
+        update: (payload) => {
+          floatingLyricsPayload = { ...floatingLyricsPayload, ...(payload || {}) }
+          if (floatingLyricsWindow && !floatingLyricsWindow.isDestroyed()) {
+            floatingLyricsWindow.webContents.send('floating-lyrics:update', floatingLyricsPayload)
+          }
+          updateFloatingLyricsVisibility()
+          return true
+        },
+      },
+      windows: {
+        getMain: () => mainWindow && !mainWindow.isDestroyed() ? mainWindow : null,
+        getFloatingLyrics: () => floatingLyricsWindow && !floatingLyricsWindow.isDestroyed() ? floatingLyricsWindow : null,
+        create: (windowOptions = {}) => new BrowserWindow(windowOptions),
+      },
+      electron: {
+        app,
+        BrowserWindow,
+        clipboard,
+        dialog,
+        globalShortcut,
+        Menu,
+        nativeImage,
+        nativeTheme,
+        net,
+        Notification,
+        screen,
+        session,
+        shell,
+        Tray,
+      },
+      onBroadcast: broadcastToWindows,
+    },
+  })
+  return pluginManager
+}
+
+function registerPluginIpc() {
+  ipcMain.handle('plugins:list', () => guarded(() => pluginManager.listPlugins(), []))
+  ipcMain.handle('plugins:get', (_event, id) => guarded(() => pluginManager.getPlugin(String(id || ''))))
+  ipcMain.handle('plugins:rescan', () => guarded(() => pluginManager.rescanPlugins(), []))
+  ipcMain.handle('plugins:install-folder', (_event, options = {}) => guarded(async () => {
+    const picked = await dialog.showOpenDialog(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+      title: options?.link ? '选择本地开发插件文件夹' : '选择要安装的插件文件夹',
+      properties: ['openDirectory'],
+    })
+    if (picked.canceled || !picked.filePaths?.length) return { canceled: true }
+    const plugin = await pluginManager.installFromDirectory(picked.filePaths[0], {
+      link: Boolean(options?.link),
+      enable: options?.enable !== false,
+      force: Boolean(options?.force),
+    })
+    return { canceled: false, plugin }
+  }))
+  ipcMain.handle('plugins:install-archive', (_event, options = {}) => guarded(async () => {
+    const picked = await dialog.showOpenDialog(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+      title: '选择 MenoRadio 插件包或 plugin.json',
+      properties: ['openFile'],
+      filters: [
+        { name: 'MenoRadio Plugin', extensions: ['mrplugin', 'zip', 'json'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    })
+    if (picked.canceled || !picked.filePaths?.length) return { canceled: true }
+    const plugin = await pluginManager.installFromPath(picked.filePaths[0], {
+      link: Boolean(options?.link),
+      enable: options?.enable !== false,
+      force: Boolean(options?.force),
+    })
+    return { canceled: false, plugin }
+  }))
+  ipcMain.handle('plugins:install-path', (_event, payload = {}) => guarded(async () => {
+    const plugin = await pluginManager.installFromPath(payload?.path, payload?.options || {})
+    return { canceled: false, plugin }
+  }))
+  ipcMain.handle('plugins:enable', (_event, payload = {}) => guarded(() =>
+    pluginManager.enablePlugin(String(payload?.id || ''), { force: Boolean(payload?.force) })
+  ))
+  ipcMain.handle('plugins:disable', (_event, id) => guarded(() =>
+    pluginManager.disablePlugin(String(id || ''))
+  ))
+  ipcMain.handle('plugins:reload', (_event, id) => guarded(() =>
+    pluginManager.reloadPlugin(String(id || ''))
+  ))
+  ipcMain.handle('plugins:uninstall', (_event, payload = {}) => guarded(() =>
+    pluginManager.uninstallPlugin(String(payload?.id || ''), { removeData: Boolean(payload?.removeData) })
+  ))
+  ipcMain.handle('plugins:open-dir', (_event, id = '') => guarded(async () => {
+    const plugin = id ? pluginManager.getPlugin(String(id)) : null
+    const targetDir = plugin?.dir || pluginManager.pluginsDir
+    fs.mkdirSync(targetDir, { recursive: true })
+    const errorMessage = await shell.openPath(targetDir)
+    if (errorMessage) throw new Error(errorMessage)
+    return { path: targetDir }
+  }))
+  ipcMain.handle('plugins:get-settings', (_event, id) => guarded(() =>
+    pluginManager.getPluginSettings(String(id || '')), {}
+  ))
+  ipcMain.handle('plugins:set-settings', (_event, payload = {}) => guarded(() =>
+    pluginManager.setPluginSettings(String(payload?.id || ''), payload?.patch || {})
+  ))
+  ipcMain.handle('plugins:storage-get', (_event, payload = {}) => guarded(() =>
+    pluginManager.getPluginStorageValue(String(payload?.id || ''), String(payload?.key || ''))
+  ))
+  ipcMain.handle('plugins:storage-set', (_event, payload = {}) => guarded(() =>
+    pluginManager.setPluginStorageValue(String(payload?.id || ''), String(payload?.key || ''), payload?.value)
+  ))
+  ipcMain.handle('plugins:storage-delete', (_event, payload = {}) => guarded(() =>
+    pluginManager.deletePluginStorageValue(String(payload?.id || ''), String(payload?.key || ''))
+  ))
+  ipcMain.handle('plugins:storage-all', (_event, id) => guarded(() =>
+    pluginManager.readStorage(String(id || '')), {}
+  ))
+  ipcMain.handle('plugins:storage-clear', (_event, id) => guarded(() =>
+    pluginManager.clearPluginStorage(String(id || ''))
+  ))
+  ipcMain.handle('plugins:invoke-backend', (_event, payload = {}) => guarded(() =>
+    pluginManager.invokePluginBackend(String(payload?.pluginId || ''), String(payload?.method || ''), payload?.payload)
+  ))
+  ipcMain.handle('plugins:invoke-service', (_event, payload = {}) => guarded(() =>
+    pluginManager.invokePluginService(String(payload?.serviceName || ''), String(payload?.method || ''), payload?.payload)
+  ))
+  ipcMain.on('plugins:report-renderer', (_event, payload = {}) => {
+    pluginManager?.reportRendererState(String(payload?.pluginId || ''), payload?.state || {})
+  })
+  ipcMain.on('plugins:notify-event', (_event, payload = {}) => {
+    const name = String(payload?.event || '').trim()
+    if (name) pluginManager?.emitEvent(name, payload?.payload)
+  })
+}
+
 function registerWindowIpc() {
-  ipcMain.handle('window:minimize', () => mainWindow?.minimize())
-  ipcMain.handle('window:maximize', () => {
+  handleIpc('window:minimize', () => mainWindow?.minimize())
+  handleIpc('window:maximize', () => {
     if (!mainWindow) return false
     mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize()
     return mainWindow.isMaximized()
   })
-  ipcMain.handle('window:close', () => mainWindow?.close())
-  ipcMain.handle('window:is-maximized', () => mainWindow?.isMaximized() || false)
-  ipcMain.handle('window:set-fullscreen', (_event, value) => {
+  handleIpc('window:close', () => mainWindow?.close())
+  handleIpc('window:is-maximized', () => mainWindow?.isMaximized() || false)
+  handleIpc('window:set-fullscreen', (_event, value) => {
     if (!mainWindow) return false
     mainWindow.setFullScreen(Boolean(value))
     return mainWindow.isFullScreen()
   })
-  ipcMain.handle('window:is-fullscreen', () => mainWindow?.isFullScreen() || false)
-  ipcMain.handle('window:get-zoom', () => mainWindow?.webContents.getZoomFactor() || 1)
-  ipcMain.handle('window:set-zoom', (_event, payload) => {
+  handleIpc('window:is-fullscreen', () => mainWindow?.isFullScreen() || false)
+  handleIpc('window:get-zoom', () => mainWindow?.webContents.getZoomFactor() || 1)
+  handleIpc('window:set-zoom', (_event, payload) => {
     const value = payload && typeof payload === 'object' ? payload.value : payload
     const notify = payload && typeof payload === 'object' ? payload.notify !== false : true
     return setMainWindowZoom(value, notify)
   })
-  ipcMain.handle('window:step-zoom', (_event, direction) => stepMainWindowZoom(direction))
-  ipcMain.handle('app:version', () => app.getVersion())
-  ipcMain.handle('clipboard:write-text', (_event, value) => {
+  handleIpc('window:step-zoom', (_event, direction) => stepMainWindowZoom(direction))
+  handleIpc('app:version', () => app.getVersion())
+  handleIpc('clipboard:write-text', (_event, value) => {
     if (typeof value !== 'string' || !value.trim()) throw new Error('没有可复制的文字')
     clipboard.writeText(value)
   })
-  ipcMain.handle('app:check-update', () => getLatestGithubRelease())
-  ipcMain.handle('app:third-party-notices', () => fs.readFileSync(path.join(__dirname, '..', 'THIRD_PARTY_NOTICES.md'), 'utf8'))
-  ipcMain.handle('app:cache-size', () => session.defaultSession.getCacheSize())
-  ipcMain.handle('app:clear-cache', async () => {
+  handleIpc('app:check-update', () => getLatestGithubRelease())
+  handleIpc('app:third-party-notices', () => fs.readFileSync(path.join(__dirname, '..', 'THIRD_PARTY_NOTICES.md'), 'utf8'))
+  handleIpc('app:cache-size', () => session.defaultSession.getCacheSize())
+  handleIpc('app:clear-cache', async () => {
     const clearedBytes = await session.defaultSession.getCacheSize()
     await Promise.all([
       session.defaultSession.clearCache(),
@@ -1603,9 +1893,10 @@ function registerWindowIpc() {
     await session.defaultSession.clearHostResolverCache().catch(() => {})
     return { clearedBytes }
   })
-  ipcMain.handle('app:reset', async () => {
+  handleIpc('app:reset', async () => {
     if (resettingApplication) return { resetting: true }
     resettingApplication = true
+    await pluginManager?.shutdown().catch(() => {})
     clearTimeout(floatingLyricsSaveTimer)
     clearFloatingLyricsShowTimer()
     sessionCookie = ''
@@ -1622,7 +1913,7 @@ function registerWindowIpc() {
       session.defaultSession.clearAuthCache?.() || Promise.resolve(),
       session.defaultSession.clearHostResolverCache(),
     ])
-    for (const file of [sessionPath(), floatingLyricsPath()]) {
+    for (const file of [sessionPath(), floatingLyricsPath(), pluginManager?.registryPath].filter(Boolean)) {
       try {
         fs.rmSync(file, { force: true })
       } catch (error) {
@@ -1636,38 +1927,52 @@ function registerWindowIpc() {
     }, 120)
     return { resetting: true }
   })
-  ipcMain.handle('app:list-fonts', () => listInstalledFonts().catch((error) => {
+  handleIpc('app:list-fonts', () => listInstalledFonts().catch((error) => {
     console.warn('[fonts] Unable to enumerate installed fonts:', error?.message || error)
     return []
   }))
-  ipcMain.handle('app:open-external', (_event, url) => {
+  handleIpc('app:open-external', (_event, url) => {
     const parsed = new URL(String(url))
     if (!['https:', 'http:'].includes(parsed.protocol)) throw new Error('Unsupported URL')
     return shell.openExternal(parsed.toString())
   })
-  ipcMain.handle('image:thumbnail', (_event, payload) => getThumbnail(payload?.url, payload?.forceRefresh === true))
-  ipcMain.handle('media:preload-next', (_event, payload) => preloadNextMedia(payload))
-  ipcMain.handle('media:cancel-preload', (_event, exceptKey) => cancelMediaPreload(String(exceptKey || '')))
-  ipcMain.handle('media:playback-url', (_event, payload) => playbackSourceUrl(payload))
-  ipcMain.handle('media:prepare-seek', (_event, payload) => preparePlaybackSeek(payload))
-  ipcMain.handle('media:cancel-playback', () => cancelPlaybackMediaSource())
+  handleIpc('image:thumbnail', (_event, payload) => getThumbnail(payload?.url, payload?.forceRefresh === true))
+  handleIpc('media:preload-next', (_event, payload) => preloadNextMedia(payload))
+  handleIpc('media:cancel-preload', (_event, exceptKey) => cancelMediaPreload(String(exceptKey || '')))
+  handleIpc('media:playback-url', (_event, payload) => playbackSourceUrl(payload))
+  handleIpc('media:prepare-seek', (_event, payload) => preparePlaybackSeek(payload))
+  handleIpc('media:cancel-playback', () => cancelPlaybackMediaSource())
   ipcMain.on('media:playback-buffer', (event, payload) => {
     if (event.sender !== mainWindow?.webContents) return
     updatePlaybackBuffer(payload)
   })
-  ipcMain.handle('floating-lyrics:state', () => ({
+  handleIpc('floating-lyrics:state', () => ({
     config: floatingLyricsState.config,
     bounds: floatingLyricsState.bounds,
   }))
-  ipcMain.handle('floating-lyrics:configure', (_event, patch) => configureFloatingLyrics(patch))
-  ipcMain.handle('floating-lyrics:update', (_event, payload) => {
+  handleIpc('floating-lyrics:configure', async (_event, patch) => {
+    let nextPatch = patch
+    if (pluginManager) {
+      const hooked = await pluginManager.runHook('floating-lyrics:before-configure', { patch: nextPatch })
+      if (hooked.cancel) return { config: floatingLyricsState.config, bounds: floatingLyricsState.bounds }
+      nextPatch = hooked.patch ?? nextPatch
+    }
+    return configureFloatingLyrics(nextPatch)
+  })
+  handleIpc('floating-lyrics:update', async (_event, payload) => {
+    let nextPayload = payload
+    if (pluginManager) {
+      const hooked = await pluginManager.runHook('floating-lyrics:before-update', { payload: nextPayload })
+      if (hooked.cancel) return false
+      nextPayload = hooked.payload ?? nextPayload
+    }
     const wasInPlayer = Boolean(floatingLyricsPayload?.inPlayer)
     floatingLyricsPayload = {
-      text: String(payload?.text || '').slice(0, 1000),
-      translation: String(payload?.translation || '').slice(0, 1000),
-      inPlayer: Boolean(payload?.inPlayer),
-      active: Boolean(payload?.active),
-      paused: Boolean(payload?.paused),
+      text: String(nextPayload?.text || '').slice(0, 1000),
+      translation: String(nextPayload?.translation || '').slice(0, 1000),
+      inPlayer: Boolean(nextPayload?.inPlayer),
+      active: Boolean(nextPayload?.active),
+      paused: Boolean(nextPayload?.paused),
     }
     if (floatingLyricsPayload.inPlayer) {
       floatingLyricsShowNotBefore = 0
@@ -1685,8 +1990,8 @@ function registerWindowIpc() {
     updateFloatingLyricsVisibility()
     return true
   })
-  ipcMain.handle('floating-lyrics:lock', () => configureFloatingLyrics({ locked: true }))
-  ipcMain.handle('floating-lyrics:resize-start', (event, payload) => {
+  handleIpc('floating-lyrics:lock', () => configureFloatingLyrics({ locked: true }))
+  handleIpc('floating-lyrics:resize-start', (event, payload) => {
     if (!floatingLyricsWindow || floatingLyricsWindow.isDestroyed() || event.sender !== floatingLyricsWindow.webContents || floatingLyricsState.config.locked) return false
     const direction = String(payload?.direction || '')
     const x = Number(payload?.x)
@@ -1704,7 +2009,7 @@ function registerWindowIpc() {
     floatingLyricsResizeSession = null
     saveFloatingLyricsState()
   })
-  ipcMain.handle('floating-lyrics:move-start', (event, payload) => {
+  handleIpc('floating-lyrics:move-start', (event, payload) => {
     if (!floatingLyricsWindow || floatingLyricsWindow.isDestroyed() || event.sender !== floatingLyricsWindow.webContents || floatingLyricsState.config.locked) return false
     const x = Number(payload?.x)
     const y = Number(payload?.y)
@@ -1721,7 +2026,7 @@ function registerWindowIpc() {
     floatingLyricsMoveSession = null
     saveFloatingLyricsState()
   })
-  ipcMain.handle('floating-lyrics:reset', () => {
+  handleIpc('floating-lyrics:reset', () => {
     const { mode, language } = floatingLyricsState.config
     floatingLyricsState.config = { ...floatingLyricsDefaults, mode, language }
     floatingLyricsState.bounds = defaultFloatingLyricsBounds()
@@ -1737,7 +2042,7 @@ function registerWindowIpc() {
 }
 
 function registerAuthIpc() {
-  ipcMain.handle('auth:state', () => guarded(async () => {
+  handleIpc('auth:state', () => guarded(async () => {
     if (!sessionCookie) return { loggedIn: false, profile: null }
     try {
       const profile = await resolveAuthenticatedProfile(sessionProfile)
@@ -1755,7 +2060,7 @@ function registerAuthIpc() {
     }
   }, { loggedIn: false, profile: null }))
 
-  ipcMain.handle('auth:create-qr', () => guarded(async () => {
+  handleIpc('auth:create-qr', () => guarded(async () => {
     const body = await callApi('login_qr_key', {}, false)
     const key = body.data?.unikey || body.unikey
     if (!key) throw new Error(body.message || '无法获取二维码登录密钥')
@@ -1769,14 +2074,14 @@ function registerAuthIpc() {
     return { key, dataUrl }
   }))
 
-  ipcMain.handle('auth:check-qr', (_event, key) => guarded(async () => {
+  handleIpc('auth:check-qr', (_event, key) => guarded(async () => {
     if (!key || typeof key !== 'string') throw new Error('无效的二维码密钥')
     const body = await callApi('login_qr_check', { key }, false)
     if (Number(body.code) === 803 && body.cookie) saveSession(body.cookie, null)
     return { code: Number(body.code || 0), message: body.message || '', loggedIn: Number(body.code) === 803 }
   }))
 
-  ipcMain.handle('auth:login-password', (_event, payload) => guarded(async () => {
+  handleIpc('auth:login-password', (_event, payload) => guarded(async () => {
     const account = String(payload?.account || '').trim()
     const password = String(payload?.password || '')
     if (account.length < 5 || account.length > 120 || password.length < 1 || password.length > 200) {
@@ -1813,7 +2118,7 @@ function registerAuthIpc() {
     }
   }))
 
-  ipcMain.handle('auth:import-cookie', (_event, value) => guarded(async () => {
+  handleIpc('auth:import-cookie', (_event, value) => guarded(async () => {
     const cookie = sanitizeCookie(value)
     const previous = sessionCookie
     const previousProfile = sessionProfile
@@ -1834,14 +2139,14 @@ function registerAuthIpc() {
     }
   }))
 
-  ipcMain.handle('auth:logout', () => {
+  handleIpc('auth:logout', () => {
     saveSession('')
     return { ok: true }
   })
 }
 
 function registerDataIpc() {
-  ipcMain.handle('data:home', () => guarded(async () => {
+  handleIpc('data:home', () => guarded(async () => {
     if (sessionCookie) {
       const [recommended, daily] = await Promise.all([
         callApi('recommend_resource').catch(() => null),
@@ -1870,16 +2175,16 @@ function registerDataIpc() {
     return { personalized, newSongs, topPlaylists, recommended: null, daily: null }
   }))
 
-  ipcMain.handle('data:user-playlists', (_event, uid) => guarded(() =>
+  handleIpc('data:user-playlists', (_event, uid) => guarded(() =>
     callApi('user_playlist', { uid: String(uid), limit: 100, offset: 0 })
   ))
 
-  ipcMain.handle('data:user-detail', (_event, uid) => guarded(async () => {
+  handleIpc('data:user-detail', (_event, uid) => guarded(async () => {
     try { return await callApi('user_detail_new', { uid: String(uid) }) }
     catch { return callApi('user_detail', { uid: String(uid) }) }
   }))
 
-  ipcMain.handle('data:user-connections', (_event, payload) => guarded(async () => {
+  handleIpc('data:user-connections', (_event, payload) => guarded(async () => {
     const uid = String(payload?.uid || '')
     const kind = payload?.kind
     const offset = Number(payload?.offset ?? 0)
@@ -1896,11 +2201,11 @@ function registerDataIpc() {
     return { users, limit, more: users.length > 0 && (body.more == null ? users.length >= limit : body.more === true) }
   }))
 
-  ipcMain.handle('data:playlist', (_event, id) => guarded(() =>
+  handleIpc('data:playlist', (_event, id) => guarded(() =>
     callApi('playlist_detail', { id: String(id), s: 8 })
   ))
 
-  ipcMain.handle('data:artist', (_event, payload) => guarded(async () => {
+  handleIpc('data:artist', (_event, payload) => guarded(async () => {
     const artistId = String(payload?.id ?? payload)
     const limit = Math.max(20, Math.min(100, Number(payload?.limit) || 100))
     const [detail, description, songPage] = await Promise.all([
@@ -1920,7 +2225,7 @@ function registerDataIpc() {
     }
   }))
 
-  ipcMain.handle('data:artist-songs', (_event, payload) => guarded(async () => {
+  handleIpc('data:artist-songs', (_event, payload) => guarded(async () => {
     const artistId = String(payload?.id || '')
     const limit = Math.max(20, Math.min(100, Number(payload?.limit) || 100))
     const offset = Math.max(0, Number(payload?.offset) || 0)
@@ -1936,11 +2241,11 @@ function registerDataIpc() {
     }
   }))
 
-  ipcMain.handle('data:album', (_event, id) => guarded(() =>
+  handleIpc('data:album', (_event, id) => guarded(() =>
     callApi('album', { id: String(id) })
   ))
 
-  ipcMain.handle('data:search', (_event, payload) => guarded(async () => {
+  handleIpc('data:search', (_event, payload) => guarded(async () => {
     const allowedTypes = new Set([1, 10, 100, 1000, 1002, 1018])
     const requestedType = Number(payload?.type || 1)
     const type = allowedTypes.has(requestedType) ? requestedType : 1
@@ -1976,9 +2281,9 @@ function registerDataIpc() {
     }
   }))
 
-  ipcMain.handle('data:lyrics', (_event, id) => guarded(() => lyricsLoader.load(id)))
+  handleIpc('data:lyrics', (_event, id) => guarded(() => lyricsLoader.load(id)))
 
-  ipcMain.handle('data:song-url', (_event, payload) => guarded(async () => {
+  handleIpc('data:song-url', (_event, payload) => guarded(async () => {
     const id = String(payload?.id || '')
     const level = normalizeAudioQuality(payload?.level)
     const apiLevel = requestedApiAudioQuality(level)
@@ -1999,27 +2304,27 @@ function registerDataIpc() {
     return { ...body, requestedLevel: level, resolvedLevel: 'exhigh' }
   }))
 
-  ipcMain.handle('data:personal-fm', () => guarded(() => callApi('personal_fm')))
-  ipcMain.handle('data:daily', () => guarded(() => callApi('recommend_songs')))
-  ipcMain.handle('data:daily-refresh', () => guarded(() => {
+  handleIpc('data:personal-fm', () => guarded(() => callApi('personal_fm')))
+  handleIpc('data:daily', () => guarded(() => callApi('recommend_songs')))
+  handleIpc('data:daily-refresh', () => guarded(() => {
     if (!sessionCookie) throw new Error('请先登录网易云音乐')
     return callApi('recommend_songs', { afresh: true })
   }))
-  ipcMain.handle('data:like', (_event, payload) => guarded(() =>
+  handleIpc('data:like', (_event, payload) => guarded(() =>
     callApi('like', { id: String(payload?.id || ''), like: payload?.like !== false })
   ))
-  ipcMain.handle('data:like-list', (_event, uid) => guarded(() =>
+  handleIpc('data:like-list', (_event, uid) => guarded(() =>
     callApi('likelist', { uid: String(uid || ''), timestamp: Date.now() })
   ))
-  ipcMain.handle('data:playlist-subscribe', (_event, payload) => guarded(() =>
+  handleIpc('data:playlist-subscribe', (_event, payload) => guarded(() =>
     callApi('playlist_subscribe', { id: String(payload?.id || ''), t: payload?.subscribe === false ? 2 : 1 })
   ))
-  ipcMain.handle('data:playlist-create', (_event, payload) => guarded(() => {
+  handleIpc('data:playlist-create', (_event, payload) => guarded(() => {
     const name = String(payload?.name || '').trim()
     if (!name || name.length > 40) throw new Error('歌单名称需为 1 至 40 个字符')
     return callApi('playlist_create', { name, privacy: 0 })
   }))
-  ipcMain.handle('data:playlist-update', (_event, payload) => guarded(() => {
+  handleIpc('data:playlist-update', (_event, payload) => guarded(() => {
     const id = String(payload?.id || '')
     const name = String(payload?.name || '').trim()
     const description = String(payload?.description || '').trim()
@@ -2029,19 +2334,19 @@ function registerDataIpc() {
     if (description.length > 1000) throw new Error('歌单简介不能超过 1000 个字符')
     return callApi('playlist_update', { id, name, desc: description, tags })
   }))
-  ipcMain.handle('data:playlist-delete', (_event, payload) => guarded(() => {
+  handleIpc('data:playlist-delete', (_event, payload) => guarded(() => {
     const id = String(payload?.id || '')
     if (!/^\d+$/.test(id)) throw new Error('无效的歌单')
     return callApi('playlist_delete', { id })
   }))
-  ipcMain.handle('data:playlist-track', (_event, payload) => guarded(() => {
+  handleIpc('data:playlist-track', (_event, payload) => guarded(() => {
     const op = payload?.op === 'del' ? 'del' : 'add'
     const pid = String(payload?.pid || '')
     const trackId = String(payload?.trackId || '')
     if (!/^\d+$/.test(pid) || !/^\d+$/.test(trackId)) throw new Error('无效的歌单或歌曲')
     return callApi('playlist_tracks', { op, pid, tracks: trackId })
   }))
-  ipcMain.handle('data:playlist-reorder', (_event, payload) => guarded(() => {
+  handleIpc('data:playlist-reorder', (_event, payload) => guarded(() => {
     const pid = String(payload?.pid || '')
     const trackIds = Array.isArray(payload?.trackIds) ? payload.trackIds.map(String) : []
     if (!/^\d+$/.test(pid) || !trackIds.length || trackIds.some((id) => !/^\d+$/.test(id))) throw new Error('无效的歌单或歌曲顺序')
@@ -2050,16 +2355,21 @@ function registerDataIpc() {
 }
 
 if (hasSingleInstanceLock) {
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     // Clear the obsolete whole-session limiter before any renderer/API work.
     // Bulk media now owns its own pacing and must never delay application data.
     session.defaultSession.disableNetworkEmulation()
     loadSession()
     loadFloatingLyricsState()
+    initPluginManager()
     registerPlaybackProtocol()
+    registerPluginProtocol()
     registerWindowIpc()
     registerAuthIpc()
     registerDataIpc()
+    registerPluginIpc()
+    await pluginManager.initialize()
+    pluginManager.emitEvent('app:ready', { appVersion: app.getVersion() })
     createWindow()
   })
 }
@@ -2069,6 +2379,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  pluginManager?.emitEvent('app:before-quit', {})
+  void pluginManager?.shutdown().catch(() => {})
   cancelMediaPreload()
   cancelPlaybackMediaSource()
   clearTimeout(floatingLyricsSaveTimer)

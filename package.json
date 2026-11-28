@@ -1,6 +1,6 @@
 {
   "name": "menoradio",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "A calm, Fluent-inspired NetEase Cloud Music desktop player.",
   "main": "electron/main.cjs",
   "author": "ichiris",
@@ -18,7 +18,7 @@
     "screenshot:player:radio": "electron . --size=1600x1000 --preview=player-radio --screenshot=menoradio-player-radio-v1.png",
     "screenshot:user": "electron . --size=1440x900 --preview=user --screenshot=menoradio-user-v1.png",
     "test": "node --test tests/*.test.cjs",
-    "check": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/floating-preload.cjs && node --check src/core/i18n.js && node --check src/locales/zh-TW.js && node --check src/locales/en.js && node --check src/locales/ja.js && node --check src/core/utils.js && node --check src/core/playback-queue.js && node --check src/core/lyrics-parser.js && node --check src/app.js && node --check src/floating-lyrics.js",
+    "check": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/floating-preload.cjs && node --check electron/plugin-semver.cjs && node --check electron/plugin-archive.cjs && node --check electron/plugin-manifest.cjs && node --check electron/plugin-manager.cjs && node --check src/core/i18n.js && node --check src/locales/zh-TW.js && node --check src/locales/en.js && node --check src/locales/ja.js && node --check src/core/utils.js && node --check src/core/playback-queue.js && node --check src/core/lyrics-parser.js && node --check src/core/plugin-host.js && node --check src/core/floating-plugin-host.js && node --check src/core/plugin-settings-ui.js && node --check src/app.js && node --check src/floating-lyrics.js && node --check examples/plugins/aurora-studio/main.cjs && node --check examples/plugins/aurora-studio/renderer.js && node --check examples/plugins/custom-login-demo/main.cjs && node --check examples/plugins/custom-login-demo/renderer.js",
     "validate": "npm run check && npm test",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win nsis portable"
@@ -32,7 +32,7 @@
     "electron-builder": "^26.0.12"
   },
   "build": {
-    "appId": "io.menoradio.desktop",
+    "appId": "io.github.ichiris.menoradio",
     "productName": "MenoRadio",
     "asar": true,
     "files": [
@@ -57,8 +57,9 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": true,
-      "createDesktopShortcut": true,
-      "shortcutName": "MenoRadio"
+      "createDesktopShortcut": false,
+      "shortcutName": "MenoRadio",
+      "include": "build/installer.nsh"
     },
     "portable": {
       "artifactName": "MenoRadio-Portable-${version}-${arch}.${ext}"

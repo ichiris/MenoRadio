@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' menoradio-plugin:; script-src 'self' menoradio-plugin:; style-src 'self' 'unsafe-inline' menoradio-plugin:; img-src 'self' data: blob: https: http: menoradio-plugin:; connect-src 'self' https: http: ws: wss: menoradio-plugin:; font-src 'self' data: menoradio-plugin:;">
   <title>MenoRadio 悬浮歌词</title>
   <link rel="stylesheet" href="./floating-lyrics.css">
 </head>
@@ -29,6 +30,7 @@
   <script src="./locales/en.js"></script>
   <script src="./locales/ja.js"></script>
   <script src="./core/utils.js"></script>
+  <script src="./core/floating-plugin-host.js"></script>
   <script src="./floating-lyrics.js"></script>
 </body>
 </html>

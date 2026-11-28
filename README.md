@@ -7,6 +7,13 @@ MenoRadio is an unofficial NetEase Cloud Music player. It borrows the playback p
 Supports QR code login, account & password login, and Cookie login.
 Delivers a playback experience similar to LyricEase.
 
+## 插件系统 / Plugin System
+
+MenoRadio 内置全栈插件系统，支持在 **设置 → 插件** 中安装、链接、启用、配置、热重载与管理插件。插件可扩展主题、界面、登录方式、沉浸式播放页、悬浮歌词、音频处理管线及 Electron 主进程后端能力。
+
+- 插件开发文档：[docs/PLUGIN_DEVELOPMENT.md](./docs/PLUGIN_DEVELOPMENT.md)
+- 示例插件：[examples/plugins/](./examples/plugins/)
+
 ## About MenoRadio
 MenoRadio does not include any features to bypass DRM, paid membership benefits or copyright restrictions.
 

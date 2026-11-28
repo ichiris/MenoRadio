@@ -1,0 +1,12 @@
+{
+  "id": "com.menoradio.custom-login-demo",
+  "name": "自定义登录示例",
+  "author": "ichiris",
+  "description": "在登录弹窗中新增自定义登录方式，并扩展认证会话与侧边栏用户展示。",
+  "version": "1.0.0",
+  "supportedVersions": ">=0.18.0 <1.0.0",
+  "license": "MIT",
+  "capabilities": ["login", "backend", "frontend"],
+  "main": "main.cjs",
+  "renderer": "renderer.js"
+}

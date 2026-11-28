@@ -1,0 +1,91 @@
+/* Aurora Studio plugin styles */
+.aurora-meta-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #e6fffb;
+  background: rgba(94, 234, 212, 0.16);
+  border: 1px solid rgba(94, 234, 212, 0.36);
+}
+
+.aurora-stat-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.aurora-big-number {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--accent-strong) !important;
+  margin-top: 4px !important;
+}
+
+.aurora-top-list {
+  display: grid;
+  gap: 10px;
+}
+
+.aurora-play-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.aurora-insight-panel {
+  padding: 26px 22px;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.aurora-insight-panel h3 {
+  margin: 0 0 18px;
+  font-size: 22px;
+}
+
+.aurora-insight-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.aurora-metric {
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  display: grid;
+  gap: 6px;
+}
+
+.aurora-metric span {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.aurora-metric strong {
+  font-size: 18px;
+}
+
+.aurora-muted {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+/* Custom Player Page Style: Vinyl Glow */
+@keyframes aurora-vinyl-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.immersive-player.aurora-vinyl-player .immersive-cover {
+  border-radius: 50% !important;
+  box-shadow: 0 0 0 6px rgba(255, 255, 255, 0.08), 0 0 42px color-mix(in srgb, var(--aurora-glow, #5eead4) 45%, transparent) !important;
+  animation: aurora-vinyl-spin 22s linear infinite;
+}
+
+.immersive-player.aurora-vinyl-player.paused .immersive-cover {
+  animation-play-state: paused;
+}
