@@ -1,4 +1,7 @@
 const bridge = window.menoradio
+const i18n = window.MenoRadioI18n
+const { t } = i18n
+i18n.initializeDocument()
 const {
   clamp,
   adaptiveLyricFontSize,
@@ -451,6 +454,8 @@ const themes = [
   ['catppuccin-mocha', 'Catppuccin Mocha'],
 ]
 
+const playerStyles = [['modern', '新版'], ['legacy', '旧版']]
+
 function applyTheme() {
   if (!themes.some(([value]) => value === state.theme)) state.theme = 'dark'
   document.documentElement.dataset.theme = state.theme
@@ -645,7 +650,7 @@ async function loadThumbnail(image, attempt = 0) {
   image.dataset.thumbnailState = 'loading'
   image.src = transparentThumbnail
   const request = bridge.images.thumbnail(requestUrl, attempt > 0).then(async (response) => {
-    if (!response?.bytes?.length) throw new Error('缩略图未返回内容')
+    if (!response?.bytes?.length) throw new Error(t('缩略图未返回内容'))
     const blobUrl = URL.createObjectURL(new Blob([response.bytes], { type: response.mimeType || 'image/jpeg' }))
     rememberThumbnail(requestUrl, blobUrl)
     await applyThumbnailBlob(image, blobUrl)
@@ -804,7 +809,7 @@ function getAudioPreload(track, warmMedia = false) {
     entry.sourcePromise = bridge.data.songUrl(track.id, state.audioQuality).then((response) => {
       const body = unwrap(response)
       const source = body.data?.[0] || {}
-      if (!source.url) throw playbackError('这首歌暂时无法播放，可能需要会员或所在地区没有版权。', 'unavailable')
+      if (!source.url) throw playbackError(t('这首歌暂时无法播放，可能需要会员或所在地区没有版权。'), 'unavailable')
       entry.source = { ...source, url: String(source.url).replace(/^http:/, 'https:') }
       return entry.source
     }).catch((error) => {
@@ -869,11 +874,11 @@ function imageOf(source, label = 'M') {
 
 function artistOf(song) {
   const artists = song?.ar || song?.artists || song?.song?.artists || []
-  return artists.map((artist) => artist.name).filter(Boolean).join(' / ') || song?.artist || '未知音乐人'
+  return artists.map((artist) => artist.name).filter(Boolean).join(' / ') || song?.artist || t('未知音乐人')
 }
 
 function albumOf(song) {
-  return song?.al?.name || song?.album?.name || song?.song?.album?.name || '未知专辑'
+  return song?.al?.name || song?.album?.name || song?.song?.album?.name || t('未知专辑')
 }
 
 function sourceSongOf(track) {
@@ -893,14 +898,14 @@ function albumOfTrack(track) {
   const source = sourceSongOf(track)
   const album = source?.al || source?.album || source?.song?.album
   if (!album?.id) return null
-  return { id: String(album.id), name: String(album.name || track?.album || '未知专辑'), cover: imageOf(album, album.name) }
+  return { id: String(album.id), name: String(album.name || track?.album || t('未知专辑')), cover: imageOf(album, album.name) }
 }
 
 function normalizeTrack(input) {
   const song = input?.song || input || {}
   return {
     id: String(song.id ?? input?.id ?? ''),
-    name: song.name || input?.name || '未命名歌曲',
+    name: song.name || input?.name || t('未命名歌曲'),
     artist: artistOf(song),
     album: albumOf(song),
     cover: imageOf(song, song.name || input?.name),
@@ -913,7 +918,7 @@ function normalizeTrack(input) {
 function normalizePlaylist(input) {
   return {
     id: String(input?.id ?? ''),
-    name: input?.name || '未命名歌单',
+    name: input?.name || t('未命名歌单'),
     cover: imageOf(input, input?.name),
     description: input?.description || input?.copywriter || '',
     creator: input?.creator?.nickname || '',
@@ -944,14 +949,14 @@ function isLikedPlaylist(playlist) {
 }
 
 function unwrap(result) {
-  if (!result?.ok) throw new Error(result?.error || '请求失败')
+  if (!result?.ok) throw new Error(result?.error || t('请求失败'))
   return result.data
 }
 
 function toast(message, title = '', type = '') {
   const element = document.createElement('div')
   element.className = `toast ${type}`
-  element.innerHTML = `${title ? `<strong>${escapeHtml(title)}</strong>` : ''}${escapeHtml(message)}`
+  element.innerHTML = `${title ? `<strong>${escapeHtml(t(title))}</strong>` : ''}${escapeHtml(t(message))}`
   dom.toastLayer.append(element)
   setTimeout(() => element.remove(), 3800)
 }
@@ -969,7 +974,7 @@ function expandableDescriptionMarkup(value, lines = 1) {
   if (!text) return ''
   return `<div class="entity-description-text expandable-description is-collapsed" data-expandable-description style="--description-lines:${Math.max(1, Number(lines) || 1)}">
     <span data-description-content>${escapeHtml(text)}</span>
-    <button type="button" data-toggle-description aria-expanded="false" hidden>展开</button>
+    <button type="button" data-toggle-description aria-expanded="false" hidden>${escapeHtml(t('展开'))}</button>
   </div>`
 }
 
@@ -991,12 +996,12 @@ function renderCards(playlists) {
     const playlist = playlistInput.cover ? playlistInput : normalizePlaylist(playlistInput)
     return `<div class="music-card">
       <span class="card-cover-wrap">
-        <button type="button" class="card-cover-button" data-playlist-id="${attr(playlist.id)}" aria-label="打开 ${attr(playlist.name)}"><img class="card-cover" ${thumbnailAttributes(playlist.cover, thumbnailPixelSize(220, 384))} alt=""></button>
-        <button type="button" class="card-play" data-playlist-play="${attr(playlist.id)}" aria-label="播放 ${attr(playlist.name)}">${icon('play')}</button>
+        <button type="button" class="card-cover-button" data-playlist-id="${attr(playlist.id)}" aria-label="${attr(t('打开 {name}', { name: playlist.name }))}"><img class="card-cover" ${thumbnailAttributes(playlist.cover, thumbnailPixelSize(220, 384))} alt=""></button>
+        <button type="button" class="card-play" data-playlist-play="${attr(playlist.id)}" aria-label="${attr(t('播放 {name}', { name: playlist.name }))}">${icon('play')}</button>
       </span>
       <button type="button" class="card-copy" data-playlist-id="${attr(playlist.id)}">
         <span class="card-title">${escapeHtml(playlist.name)}</span>
-        <span class="card-subtitle">${playlist.creator ? escapeHtml(playlist.creator) : `${formatCount(playlist.playCount)} 次播放`}</span>
+        <span class="card-subtitle">${playlist.creator ? escapeHtml(playlist.creator) : t('{count} 次播放', { count: formatCount(playlist.playCount) })}</span>
       </button>
     </div>`
   }).join('')}</div>`
@@ -1006,10 +1011,10 @@ function renderTrackTable(tracks, options = {}) {
   state.pageTracks = tracks
   state.selectedTrackIndex = -1
   if (!tracks.length) {
-    const title = options.emptyTitle || '这里还是空的'
+    const title = options.emptyTitle || t('这里还是空的')
     const description = Object.prototype.hasOwnProperty.call(options, 'emptyDescription')
       ? options.emptyDescription
-      : '换个关键词，或者稍后再回来看看。'
+      : t('换个关键词，或者稍后再回来看看。')
     return `<div class="empty-state"><div class="empty-state-inner"><div class="empty-icon">${icon('list')}</div><h2>${escapeHtml(title)}</h2>${description ? `<p>${escapeHtml(description)}</p>` : ''}</div></div>`
   }
   const visibleTracks = options.limit == null ? tracks : tracks.slice(0, options.limit)
@@ -1018,7 +1023,7 @@ function renderTrackTable(tracks, options = {}) {
     <div class="track-main"><img class="track-cover" ${thumbnailAttributes(track.cover, thumbnailPixelSize(40))} alt=""><span class="track-copy"><span class="track-name">${escapeHtml(track.name)}${track.alias ? ` <small>(${escapeHtml(track.alias)})</small>` : ''}</span><span class="track-artist">${escapeHtml(track.artist)}</span></span></div>
     <span class="track-album">${escapeHtml(track.album)}</span>
     <span class="track-duration">${formatDuration(track.duration)}</span>
-    <button class="player-icon track-more" aria-label="更多">${icon('more')}</button>
+    <button class="player-icon track-more" aria-label="${attr(t('更多'))}">${icon('more')}</button>
   </div>`).join('')}</div>`
 }
 
@@ -1029,7 +1034,7 @@ function dailyDateKey() {
 }
 
 function dailyTracksFrom(body) {
-  if (body?.code != null && Number(body.code) !== 200) throw new Error(body.message || body.msg || '每日推荐请求失败')
+  if (body?.code != null && Number(body.code) !== 200) throw new Error(body.message || body.msg || t('每日推荐请求失败'))
   const songs = body?.data?.dailySongs || body?.recommend
   return Array.isArray(songs) ? uniqueTracks(songs.map(normalizeTrack)) : []
 }
@@ -1062,7 +1067,7 @@ async function loadHome() {
     dailyTracks,
     newSongs: newSongs.slice(0, 12),
   }
-  if (!state.home.playlists.length && !homePlaybackTracks().length) throw new Error('未返回推荐内容')
+  if (!state.home.playlists.length && !homePlaybackTracks().length) throw new Error(t('未返回推荐内容'))
   return state.home
 }
 
@@ -1075,9 +1080,9 @@ async function renderHome() {
     const hasDaily = todayDailyTracks().length > 0
     dom.page.innerHTML = `<div class="page-inner">
       <section class="hero">
-        <div class="hero-copy"><span class="eyebrow">今日推荐</span><h1>${state.loggedIn ? '今天听什么？' : '发现音乐'}</h1>
-        <p>为你整理的歌曲与歌单。</p>
-        <button class="primary-button" data-play-home>${icon('play')} 播放今日推荐</button></div>
+        <div class="hero-copy"><span class="eyebrow">${escapeHtml(t('今日推荐'))}</span><h1>${state.loggedIn ? t('今天听什么？') : t('发现音乐')}</h1>
+        <p>${escapeHtml(t('为你整理的歌曲与歌单。'))}</p>
+        <button class="primary-button" data-play-home>${icon('play')} ${escapeHtml(t('播放今日推荐'))}</button></div>
         <div class="hero-turntable" aria-hidden="true">
           <span class="hero-vinyl"><i></i></span>
           <svg class="hero-tonearm" viewBox="0 0 128 188">
@@ -1093,13 +1098,13 @@ async function renderHome() {
           </svg>
         </div>
       </section>
-      <div class="section-title"><h2>${state.loggedIn ? '为你推荐' : '热门歌单'}</h2><button data-route-link="search">发现更多 ›</button></div>
+      <div class="section-title"><h2>${state.loggedIn ? t('为你推荐') : t('热门歌单')}</h2><button data-route-link="search">${escapeHtml(t('发现更多'))} ›</button></div>
       ${renderCards(home.playlists.slice(0, 6))}
-      <div class="section-title"><h2>${hasDaily ? '你的今日歌曲' : '新歌速递'}</h2>${hasDaily ? '<button type="button" data-route-link="daily">查看全部 ›</button>' : '<button type="button" data-play-home>播放全部 ›</button>'}</div>
+      <div class="section-title"><h2>${hasDaily ? t('你的今日歌曲') : t('新歌速递')}</h2>${hasDaily ? `<button type="button" data-route-link="daily">${escapeHtml(t('查看全部'))} ›</button>` : `<button type="button" data-play-home>${escapeHtml(t('播放全部'))} ›</button>`}</div>
       ${hasDaily ? renderTrackTable(todayDailyTracks(), { limit: 10, playOnClick: true }) : renderTrackTable(home.newSongs.slice(0, 10))}
     </div>`
   } catch (error) {
-    if (state.route === 'home' && dom.page.firstElementChild === page) renderError('主页加载失败', error.message, () => { state.home = null; renderHome() })
+    if (state.route === 'home' && dom.page.firstElementChild === page) renderError(t('主页加载失败'), error.message, () => { state.home = null; renderHome() })
   }
 }
 
@@ -1108,14 +1113,14 @@ async function fetchPlaylist(id) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const body = unwrap(await bridge.data.playlist(id))
-      if (body?.code && Number(body.code) !== 200) throw new Error(body.message || '歌单加载失败')
+      if (body?.code && Number(body.code) !== 200) throw new Error(body.message || t('歌单加载失败'))
       const source = body.playlist || body
-      if (!source?.id) throw new Error('歌单信息未完整返回')
+      if (!source?.id) throw new Error(t('歌单信息未完整返回'))
       const playlist = normalizePlaylist(source)
       const tracks = (source.tracks || body.songs || []).map(normalizeTrack)
       const expectedTrackCount = Math.max(playlist.trackCount, Array.isArray(source.trackIds) ? source.trackIds.length : 0)
       if (expectedTrackCount > 0 && tracks.length === 0) {
-        throw new Error('网络不稳定，歌单歌曲未完整加载')
+        throw new Error(t('网络不稳定，歌单歌曲未完整加载'))
       }
       return { playlist, tracks }
     } catch (error) {
@@ -1123,7 +1128,7 @@ async function fetchPlaylist(id) {
       if (attempt === 0) await new Promise((resolve) => window.setTimeout(resolve, 520))
     }
   }
-  throw lastError || new Error('歌单加载失败')
+  throw lastError || new Error(t('歌单加载失败'))
 }
 
 async function renderPlaylist(payload) {
@@ -1140,30 +1145,30 @@ async function renderPlaylist(payload) {
     }
     const ownPlaylist = state.loggedIn && playlist.creatorId === String(state.profile?.userId || '')
     const subscribed = playlist.subscribed || state.userPlaylists.some((item) => String(item.id) === String(playlist.id) && item.creatorId !== String(state.profile?.userId || ''))
-    const collectAction = ownPlaylist ? '' : `<button class="secondary-button ${subscribed ? 'active' : ''}" data-playlist-subscribe data-playlist-subscribed="${subscribed}">${icon('heart')} ${subscribed ? '已收藏' : '收藏歌单'}</button>`
+    const collectAction = ownPlaylist ? '' : `<button class="secondary-button ${subscribed ? 'active' : ''}" data-playlist-subscribe data-playlist-subscribed="${subscribed}">${icon('heart')} ${subscribed ? t('已收藏') : t('收藏歌单')}</button>`
     dom.page.innerHTML = `<div class="page-inner">
       <section class="playlist-hero" style="--hero-image:url('${attr(playlist.cover)}')">
         <img class="playlist-cover" src="${attr(playlist.cover)}" alt="${attr(playlist.name)}">
-        <div class="playlist-meta"><span class="eyebrow">歌单 · ${tracks.length || playlist.trackCount} 首</span><h1>${escapeHtml(playlist.name)}</h1>
+        <div class="playlist-meta"><span class="eyebrow">${escapeHtml(t('歌单 · {count} 首', { count: tracks.length || playlist.trackCount }))}</span><h1>${escapeHtml(playlist.name)}</h1>
         ${playlist.creator ? `<p class="creator">${playlist.creatorId ? `<button type="button" class="creator-link" data-user-id="${attr(playlist.creatorId)}" data-user-name="${attr(playlist.creator)}">${escapeHtml(playlist.creator)}</button>` : escapeHtml(playlist.creator)}</p>` : ''}${expandableDescriptionMarkup(playlist.description)}
-        <div class="playlist-actions"><button class="primary-button" data-playlist-play-all>${icon('play')} 播放全部</button>${collectAction}<button class="secondary-button" data-toggle-playlist-search aria-expanded="false">${icon('search')} 搜索</button></div></div>
+        <div class="playlist-actions"><button class="primary-button" data-playlist-play-all>${icon('play')} ${escapeHtml(t('播放全部'))}</button>${collectAction}<button class="secondary-button" data-toggle-playlist-search aria-expanded="false">${icon('search')} ${escapeHtml(t('搜索'))}</button></div></div>
         <div id="playlistSearchPanel" class="playlist-search-panel" hidden>
-          <label><svg><use href="#i-search"/></svg><input type="search" data-playlist-search placeholder="在歌单中搜索" autocomplete="off"></label>
-          <span data-playlist-result-count>${tracks.length} 首</span>
+          <label><svg><use href="#i-search"/></svg><input type="search" data-playlist-search placeholder="${attr(t('在歌单中搜索'))}" autocomplete="off"></label>
+          <span data-playlist-result-count>${escapeHtml(t('{count} 首', { count: tracks.length }))}</span>
         </div>
       </section>
-      <div id="playlistTrackList">${tracks.length ? renderTrackTable(tracks) : '<div class="empty-state playlist-empty-state"><div class="empty-state-inner"><div class="empty-icon">' + icon('list') + '</div><h2>这个歌单还没有歌曲</h2><p>以后再次打开时，MenoRadio 会重新同步歌单内容。</p></div></div>'}</div>
+      <div id="playlistTrackList">${tracks.length ? renderTrackTable(tracks) : '<div class="empty-state playlist-empty-state"><div class="empty-state-inner"><div class="empty-icon">' + icon('list') + `</div><h2>${escapeHtml(t('这个歌单还没有歌曲'))}</h2><p>${escapeHtml(t('以后再次打开时，MenoRadio 会重新同步歌单内容。'))}</p></div></div>`}</div>
     </div>`
     if (!tracks.length) state.pageTracks = []
     hydrateExpandableDescriptions()
   } catch (error) {
-    renderError('歌单加载失败', error.message, () => renderPlaylist(payload))
+    renderError(t('歌单加载失败'), error.message, () => renderPlaylist(payload))
   }
 }
 
 async function renderArtist(payload) {
   const id = String(payload?.id || payload || '')
-  const fallbackName = payload?.name || '歌手'
+  const fallbackName = payload?.name || t('歌手')
   const pageSize = 100
   skeletonPage()
   try {
@@ -1181,20 +1186,20 @@ async function renderArtist(payload) {
     dom.page.innerHTML = `<div class="page-inner entity-page">
       <section class="playlist-hero entity-hero" style="--hero-image:url('${attr(cover)}')">
         <img class="playlist-cover entity-cover artist-cover" src="${attr(cover)}" alt="${attr(name)}">
-        <div class="playlist-meta"><span class="eyebrow">歌手 · ${total} 首歌曲</span><h1>${escapeHtml(name)}</h1>
+        <div class="playlist-meta"><span class="eyebrow">${escapeHtml(t('歌手 · {count} 首歌曲', { count: total }))}</span><h1>${escapeHtml(name)}</h1>
           ${expandableDescriptionMarkup(biography)}
-          <div class="playlist-actions"><button class="primary-button" data-play-all>${icon('play')} 播放全部</button></div>
+          <div class="playlist-actions"><button class="primary-button" data-play-all>${icon('play')} ${escapeHtml(t('播放全部'))}</button></div>
         </div>
       </section>
-      <section><div class="section-title"><h2 data-artist-song-count>歌曲 · ${tracks.length}${hasMore ? ` / ${total}` : ''}</h2></div>
-        <div data-artist-track-list>${renderTrackTable(tracks, { emptyTitle: '暂无歌曲', emptyDescription: '' })}</div>
-        ${hasMore ? `<p class="entity-load-status" data-artist-load-status>正在加载其余歌曲…</p>` : ''}
+      <section><div class="section-title"><h2 data-artist-song-count>${escapeHtml(t('歌曲'))} · ${tracks.length}${hasMore ? ` / ${total}` : ''}</h2></div>
+        <div data-artist-track-list>${renderTrackTable(tracks, { emptyTitle: t('暂无歌曲'), emptyDescription: '' })}</div>
+        ${hasMore ? `<p class="entity-load-status" data-artist-load-status>${escapeHtml(t('正在加载其余歌曲…'))}</p>` : ''}
       </section>
     </div>`
     hydrateExpandableDescriptions()
     if (hasMore) void loadRemainingArtistSongs(id, tracks, total, pageSize)
   } catch (error) {
-    if (state.route === 'artist') renderError('歌手页面加载失败', error.message, () => renderArtist(payload))
+    if (state.route === 'artist') renderError(t('歌手页面加载失败'), error.message, () => renderArtist(payload))
   }
 }
 
@@ -1221,26 +1226,26 @@ async function loadRemainingArtistSongs(id, initialTracks, expectedTotal, pageSi
       total = Math.max(total, Number(body?.total || 0), tracks.length)
       more = body?.more !== false && (Number(body?.total || 0) > 0 ? offset < total : batch.length >= pageSize)
       const status = $('[data-artist-load-status]', dom.page)
-      if (status) status.textContent = `正在加载其余歌曲… ${tracks.length} / ${total}`
+      if (status) status.textContent = `${t('正在加载其余歌曲…')} ${tracks.length} / ${total}`
     }
     if (state.route !== 'artist' || String(state.routePayload?.id || state.routePayload || '') !== id) return
     const list = $('[data-artist-track-list]', dom.page)
     const heading = $('[data-artist-song-count]', dom.page)
     const status = $('[data-artist-load-status]', dom.page)
     state.pageTracks = tracks
-    if (list) list.innerHTML = renderTrackTable(tracks, { emptyTitle: '暂无歌曲', emptyDescription: '' })
-    if (heading) heading.textContent = `歌曲 · ${tracks.length}`
+    if (list) list.innerHTML = renderTrackTable(tracks, { emptyTitle: t('暂无歌曲'), emptyDescription: '' })
+    if (heading) heading.textContent = `${t('歌曲')} · ${tracks.length}`
     status?.remove()
   } catch {
     if (state.route !== 'artist' || String(state.routePayload?.id || state.routePayload || '') !== id) return
     const status = $('[data-artist-load-status]', dom.page)
-    if (status) status.textContent = `已加载 ${tracks.length} 首，其余歌曲暂时无法载入`
+    if (status) status.textContent = t('已加载 {count} 首，其余歌曲暂时无法载入', { count: tracks.length })
   }
 }
 
 async function renderAlbum(payload) {
   const id = String(payload?.id || payload || '')
-  const fallbackName = payload?.name || '专辑'
+  const fallbackName = payload?.name || t('专辑')
   skeletonPage()
   try {
     const body = unwrap(await bridge.data.album(id))
@@ -1256,24 +1261,24 @@ async function renderAlbum(payload) {
       ? `<button type="button" class="creator-link" data-artist-id="${attr(artist.id)}" data-artist-name="${attr(artist.name)}">${escapeHtml(artist.name)}</button>`
       : escapeHtml(artist.name)).join(' / ')
     const published = Number(album.publishTime) > 0
-      ? new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' }).format(new Date(Number(album.publishTime)))
+      ? new Intl.DateTimeFormat(i18n.locale, { year: 'numeric', month: 'long', day: 'numeric' }).format(new Date(Number(album.publishTime)))
       : ''
     state.pageTracks = tracks
     dom.page.innerHTML = `<div class="page-inner entity-page">
       <section class="playlist-hero entity-hero" style="--hero-image:url('${attr(cover)}')">
         <img class="playlist-cover entity-cover" src="${attr(cover)}" alt="${attr(name)}">
-        <div class="playlist-meta"><span class="eyebrow">专辑 · ${tracks.length || Number(album.size || 0)} 首</span><h1>${escapeHtml(name)}</h1>
+        <div class="playlist-meta"><span class="eyebrow">${escapeHtml(t('专辑 · {count} 首', { count: tracks.length || Number(album.size || 0) }))}</span><h1>${escapeHtml(name)}</h1>
           ${artistLinks ? `<p class="creator">${artistLinks}</p>` : ''}
           ${published ? `<p class="entity-published">${escapeHtml(published)}</p>` : ''}
           ${expandableDescriptionMarkup(album.description || album.briefDesc)}
-          <div class="playlist-actions"><button class="primary-button" data-play-all>${icon('play')} 播放全部</button></div>
+          <div class="playlist-actions"><button class="primary-button" data-play-all>${icon('play')} ${escapeHtml(t('播放全部'))}</button></div>
         </div>
       </section>
-      <section><div class="section-title"><h2>歌曲 · ${tracks.length}</h2></div>${renderTrackTable(tracks, { emptyTitle: '暂无歌曲', emptyDescription: '' })}</section>
+      <section><div class="section-title"><h2>${escapeHtml(t('歌曲'))} · ${tracks.length}</h2></div>${renderTrackTable(tracks, { emptyTitle: t('暂无歌曲'), emptyDescription: '' })}</section>
     </div>`
     hydrateExpandableDescriptions()
   } catch (error) {
-    if (state.route === 'album') renderError('专辑页面加载失败', error.message, () => renderAlbum(payload))
+    if (state.route === 'album') renderError(t('专辑页面加载失败'), error.message, () => renderAlbum(payload))
   }
 }
 
@@ -1281,17 +1286,17 @@ function updateDailyRefreshButton() {
   const button = $('[data-daily-refresh]', dom.page)
   if (!button) return
   button.disabled = Boolean(state.dailyRequest)
-  const label = { sync: '正在同步…', refresh: '正在刷新…' }
-  button.textContent = label[state.dailyRequest] || '刷新推荐'
+  const label = { sync: t('正在同步…'), refresh: t('正在刷新…') }
+  button.textContent = label[state.dailyRequest] || t('刷新推荐')
 }
 
 function renderDailyTracks(tracks) {
-  const date = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())
+  const date = new Intl.DateTimeFormat(i18n.locale, { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())
   const refresh = state.loggedIn && todayDailyTracks().length
-    ? '<button type="button" class="secondary-button" data-daily-refresh>刷新推荐</button>'
+    ? `<button type="button" class="secondary-button" data-daily-refresh>${escapeHtml(t('刷新推荐'))}</button>`
     : ''
-  const actions = `<div class="daily-actions">${refresh}<button type="button" class="primary-button" data-play-all>${icon('play')} 播放全部</button></div>`
-  dom.page.innerHTML = `<div class="page-inner" data-daily-date="${attr(dailyDateKey())}">${pageTitle('每日推荐', `${date} · 根据你的音乐口味更新`, actions)}${renderTrackTable(tracks)}</div>`
+  const actions = `<div class="daily-actions">${refresh}<button type="button" class="primary-button" data-play-all>${icon('play')} ${escapeHtml(t('播放全部'))}</button></div>`
+  dom.page.innerHTML = `<div class="page-inner" data-daily-date="${attr(dailyDateKey())}">${pageTitle(t('每日推荐'), `${date} · ${t('根据你的音乐口味更新')}`, actions)}${renderTrackTable(tracks)}</div>`
   updateDailyRefreshButton()
 }
 
@@ -1314,10 +1319,10 @@ async function renderDaily() {
     if (tracks.length) state.dailyRecommendation = { day, tracks }
     const daily = todayDailyTracks()
     const list = daily.length ? daily : fallback
-    if (!list.length) throw new Error('未返回推荐歌曲')
+    if (!list.length) throw new Error(t('未返回推荐歌曲'))
     renderDailyTracks(list)
   } catch (error) {
-    if (isCurrent()) renderError('每日推荐加载失败', error.message, renderDaily)
+    if (isCurrent()) renderError(t('每日推荐加载失败'), error.message, renderDaily)
   }
 }
 
@@ -1332,15 +1337,15 @@ async function updateDailyRecommendations({ refresh = false } = {}) {
   try {
     const result = await (refresh ? bridge.data.refreshDaily() : bridge.data.daily())
     const tracks = dailyTracksFrom(unwrap(result))
-    if (!tracks.length) throw new Error('网易云未返回推荐歌曲')
+    if (!tracks.length) throw new Error(t('网易云未返回推荐歌曲'))
     if (!sameAccount() || day !== dailyDateKey()) return
     const changed = tracks.length !== previous.length || tracks.some((track, index) => track.id !== previous[index].id)
     state.dailyRecommendation = { day, tracks }
     if (changed && state.route === 'daily') renderDailyTracks(tracks)
     else if (changed && state.route === 'home') void renderHome()
-    if (refresh) toast(changed ? '每日推荐已刷新' : '网易云返回了相同的推荐歌曲')
+    if (refresh) toast(changed ? t('每日推荐已刷新') : t('网易云返回了相同的推荐歌曲'))
   } catch (error) {
-    if (refresh && sameAccount()) toast(error.message || '暂时无法刷新每日推荐', '刷新失败', 'error')
+    if (refresh && sameAccount()) toast(error.message || t('暂时无法刷新每日推荐'), t('刷新失败'), 'error')
   } finally {
     state.dailyRequest = null
     updateDailyRefreshButton()
@@ -1349,7 +1354,7 @@ async function updateDailyRecommendations({ refresh = false } = {}) {
 
 async function renderLiked() {
   if (!state.loggedIn) {
-    renderLoginRequired('登录后查看喜欢的音乐', '扫码登录网易云音乐，即可同步收藏和歌单。')
+    renderLoginRequired(t('登录后查看喜欢的音乐'), t('扫码登录网易云音乐，即可同步收藏和歌单。'))
     return
   }
   const likedPlaylist = likedPlaylistOf()
@@ -1359,13 +1364,13 @@ async function renderLiked() {
     setActiveNav('liked')
     await renderPlaylist(state.routePayload)
   } else {
-    renderEmpty('喜欢的音乐', '暂时没有找到你的收藏歌单。', 'heart')
+    renderEmpty(t('喜欢的音乐'), t('暂时没有找到你的收藏歌单。'), 'heart')
   }
 }
 
 async function renderUser(payload) {
   const uid = String(payload?.uid || '')
-  const name = payload?.name || '网易云用户'
+  const name = payload?.name || t('网易云用户')
   state.pageTracks = []
   skeletonPage()
   const loadingPage = dom.page.firstElementChild
@@ -1384,34 +1389,34 @@ async function renderUser(payload) {
     const collectedPlaylists = playlists.filter((playlist) => String(playlist.creatorId) !== uid)
     const nickname = profile.nickname || name
     const avatar = imageOf(profile, nickname)
-    const signature = truncate(profile.signature || '这个人还没有留下个性签名。', 180)
+    const signature = truncate(profile.signature || t('这个人还没有留下个性签名。'), 180)
     const follows = Number(profile.follows ?? profile.followCount ?? 0)
     const followers = Number(profile.followeds ?? profile.followerCount ?? 0)
     dom.page.innerHTML = `<div class="page-inner user-page">
       <section class="user-hero">
         <img class="user-avatar" src="${attr(avatar)}" alt="${attr(nickname)}">
-        <div class="user-profile-copy"><span class="eyebrow">网易云音乐用户</span><h1>${escapeHtml(nickname)}</h1><p>${escapeHtml(signature)}</p>
+        <div class="user-profile-copy"><span class="eyebrow">${escapeHtml(t('网易云音乐用户'))}</span><h1>${escapeHtml(nickname)}</h1><p>${escapeHtml(signature)}</p>
           <div class="user-stats">
-            <button type="button" data-user-connections="follows" data-profile-id="${attr(uid)}" data-profile-name="${attr(nickname)}"><strong>${formatCount(follows)}</strong> 关注</button>
-            <button type="button" data-user-connections="followers" data-profile-id="${attr(uid)}" data-profile-name="${attr(nickname)}"><strong>${formatCount(followers)}</strong> 粉丝</button>
-            <span><strong>${playlists.length}</strong> 可见歌单</span>
+            <button type="button" data-user-connections="follows" data-profile-id="${attr(uid)}" data-profile-name="${attr(nickname)}"><strong>${formatCount(follows)}</strong> ${escapeHtml(t('关注'))}</button>
+            <button type="button" data-user-connections="followers" data-profile-id="${attr(uid)}" data-profile-name="${attr(nickname)}"><strong>${formatCount(followers)}</strong> ${escapeHtml(t('粉丝'))}</button>
+            <span><strong>${playlists.length}</strong> ${escapeHtml(t('可见歌单'))}</span>
           </div>
         </div>
       </section>
-      <div class="section-title"><h2>创建的歌单 · ${createdPlaylists.length}</h2></div>
-      ${createdPlaylists.length ? renderCards(createdPlaylists) : '<div class="user-playlist-empty">没有可见的创建歌单</div>'}
-      <div class="section-title user-playlist-section"><h2>收藏的歌单 · ${collectedPlaylists.length}</h2></div>
-      ${collectedPlaylists.length ? renderCards(collectedPlaylists) : '<div class="user-playlist-empty">没有可见的收藏歌单</div>'}
+      <div class="section-title"><h2>${escapeHtml(t('创建的歌单'))} · ${createdPlaylists.length}</h2></div>
+      ${createdPlaylists.length ? renderCards(createdPlaylists) : `<div class="user-playlist-empty">${escapeHtml(t('没有可见的创建歌单'))}</div>`}
+      <div class="section-title user-playlist-section"><h2>${escapeHtml(t('收藏的歌单'))} · ${collectedPlaylists.length}</h2></div>
+      ${collectedPlaylists.length ? renderCards(collectedPlaylists) : `<div class="user-playlist-empty">${escapeHtml(t('没有可见的收藏歌单'))}</div>`}
     </div>`
   } catch (error) {
-    if (isCurrent()) renderError('用户主页加载失败', error.message, () => renderUser(payload))
+    if (isCurrent()) renderError(t('用户主页加载失败'), error.message, () => renderUser(payload))
   }
 }
 
 async function renderUserConnections(payload) {
   const { uid, name, kind, offset = 0 } = payload
-  const label = kind === 'follows' ? '关注' : '粉丝'
-  const title = `${name}的${label}`
+  const following = kind === 'follows'
+  const title = t(following ? '{name}的关注' : '{name}的粉丝', { name })
   state.pageTracks = []
   skeletonPage()
   const loadingPage = dom.page.firstElementChild
@@ -1420,26 +1425,26 @@ async function renderUserConnections(payload) {
     const { users, more, limit } = unwrap(await bridge.data.userConnections(uid, kind, offset))
     if (!isCurrent()) return
     const profiles = users.filter((user) => /^\d+$/.test(String(user?.userId ?? '')))
-    const profileLink = `<button type="button" class="secondary-button" data-user-id="${attr(uid)}" data-user-name="${attr(name)}">查看主页</button>`
+    const profileLink = `<button type="button" class="secondary-button" data-user-id="${attr(uid)}" data-user-name="${attr(name)}">${escapeHtml(t('查看主页'))}</button>`
     dom.page.innerHTML = `<div class="page-inner user-page">
       ${pageTitle(title, '', profileLink)}
-      ${profiles.length ? searchEntities(profiles, 'users', false) : `<div class="user-playlist-empty">暂无可见的${label}</div>`}
+      ${profiles.length ? searchEntities(profiles, 'users', false) : `<div class="user-playlist-empty">${escapeHtml(t(following ? '暂无可见的关注' : '暂无可见的粉丝'))}</div>`}
       <div class="user-connections-pagination">
-        ${offset > 0 ? `<button type="button" class="secondary-button" data-connections-offset="${Math.max(0, offset - limit)}">上一页</button>` : ''}
-        ${more ? `<button type="button" class="secondary-button" data-connections-offset="${offset + limit}">下一页</button>` : ''}
+        ${offset > 0 ? `<button type="button" class="secondary-button" data-connections-offset="${Math.max(0, offset - limit)}">${escapeHtml(t('上一页'))}</button>` : ''}
+        ${more ? `<button type="button" class="secondary-button" data-connections-offset="${offset + limit}">${escapeHtml(t('下一页'))}</button>` : ''}
       </div>
     </div>`
   } catch (error) {
     if (isCurrent()) {
-      renderError(`${label}加载失败`, error.message, () => renderUserConnections(payload))
+      renderError(t(following ? '关注列表加载失败' : '粉丝列表加载失败'), error.message, () => renderUserConnections(payload))
     }
   }
 }
 
 function searchField(keywords = '', autofocus = false) {
   return `<form class="search-page-form" data-search-form>
-    <label><svg><use href="#i-search"/></svg><input type="search" data-page-search value="${attr(keywords)}" placeholder="搜索音乐、歌手、专辑" autocomplete="off" ${autofocus ? 'autofocus' : ''}><kbd>Ctrl K</kbd></label>
-    <button class="primary-button" type="submit">搜索</button>
+    <label><svg><use href="#i-search"/></svg><input type="search" data-page-search value="${attr(keywords)}" placeholder="${attr(t('搜索音乐、歌手、专辑'))}" autocomplete="off" ${autofocus ? 'autofocus' : ''}><kbd>Ctrl K</kbd></label>
+    <button class="primary-button" type="submit">${escapeHtml(t('搜索'))}</button>
   </form>`
 }
 
@@ -1448,7 +1453,7 @@ const searchTypes = [
 ]
 
 function searchTabs(query, activeType) {
-  return `<div class="search-tabs" role="tablist">${searchTypes.map(([type, label]) => `<button type="button" role="tab" class="${type === activeType ? 'active' : ''}" data-search-type="${type}" data-search-query="${attr(query)}">${escapeHtml(label)}</button>`).join('')}</div>`
+  return `<div class="search-tabs" role="tablist">${searchTypes.map(([type, label]) => `<button type="button" role="tab" class="${type === activeType ? 'active' : ''}" data-search-type="${type}" data-search-query="${attr(query)}">${escapeHtml(t(label))}</button>`).join('')}</div>`
 }
 
 function rememberSearchQuery(query) {
@@ -1463,19 +1468,19 @@ function rememberSearchQuery(query) {
 
 function searchHistoryMarkup() {
   if (!state.searchHistory.length) return ''
-  return `<section class="search-history" aria-label="搜索历史">
-    <div class="search-history-heading"><h2>搜索历史</h2><button type="button" data-clear-search-history>清空</button></div>
-    <div class="search-history-items">${state.searchHistory.map((query) => `<button type="button" data-search-history="${attr(query)}" title="再次搜索 ${attr(query)}"><span>${escapeHtml(query)}</span></button>`).join('')}</div>
+  return `<section class="search-history" aria-label="${attr(t('搜索历史'))}">
+    <div class="search-history-heading"><h2>${escapeHtml(t('搜索历史'))}</h2><button type="button" data-clear-search-history>${escapeHtml(t('清空'))}</button></div>
+    <div class="search-history-items">${state.searchHistory.map((query) => `<button type="button" data-search-history="${attr(query)}" title="${attr(t('再次搜索 {query}', { query: query }))}"><span>${escapeHtml(query)}</span></button>`).join('')}</div>
   </section>`
 }
 
 function searchEntities(items, kind, showHeading = true) {
   if (!items.length) return ''
-  const labels = { artists: '歌手', albums: '专辑', playlists: '歌单', users: '用户' }
+  const labels = { artists: t('歌手'), albums: t('专辑'), playlists: t('歌单'), users: t('用户') }
   return `<section class="search-entity-section">${showHeading ? `<div class="section-title"><h2>${labels[kind]} · ${items.length}</h2></div>` : ''}<div class="search-entity-grid">${items.slice(0, 30).map((item) => {
-    const name = item.name || item.nickname || '未命名'
+    const name = item.name || item.nickname || t('未命名')
     const cover = imageOf(item, name)
-    const subtitle = kind === 'playlists' ? (item.creator?.nickname || `${Number(item.trackCount || 0)} 首`) : kind === 'albums' ? artistOf(item) : kind === 'artists' ? `${Number(item.musicSize || 0)} 首歌曲` : (item.signature || '网易云音乐用户')
+    const subtitle = kind === 'playlists' ? (item.creator?.nickname || t('{count} 首', { count: Number(item.trackCount || 0) })) : kind === 'albums' ? artistOf(item) : kind === 'artists' ? t('{count} 首歌曲', { count: Number(item.musicSize || 0) }) : (item.signature || t('网易云音乐用户'))
     const action = kind === 'playlists'
       ? `data-playlist-id="${attr(item.id)}"`
       : kind === 'users'
@@ -1504,7 +1509,7 @@ function renderSearch(keywords = '', requestedType = state.routePayload?.type ||
   state.searchType = type
   if (!query) {
     state.pageTracks = []
-    dom.page.innerHTML = `<div class="page-inner search-page">${pageTitle('搜索')}${searchField('', true)}${searchTabs('', type)}${searchHistoryMarkup()}<div class="search-empty ${state.searchHistory.length ? 'with-history' : ''}"><div class="empty-state-inner"><div class="empty-icon">${icon('search')}</div><h2>听见你想找的</h2><p>输入关键词，然后按下 Enter。</p></div></div></div>`
+    dom.page.innerHTML = `<div class="page-inner search-page">${pageTitle(t('搜索'))}${searchField('', true)}${searchTabs('', type)}${searchHistoryMarkup()}<div class="search-empty ${state.searchHistory.length ? 'with-history' : ''}"><div class="empty-state-inner"><div class="empty-icon">${icon('search')}</div><h2>${escapeHtml(t('听见你想找的'))}</h2><p>${escapeHtml(t('输入关键词，然后按下 Enter。'))}</p></div></div></div>`
     return
   }
   searchNow(query, type)
@@ -1525,40 +1530,40 @@ async function searchNow(query, requestedType = state.searchType || 1018) {
   state.route = 'search'
   state.routePayload = { keywords: query, type }
   setActiveNav('search')
-  dom.page.innerHTML = `<div class="page-inner search-page">${searchField(query)}${searchTabs(query, type)}<div class="search-heading"><p>正在搜索</p><h1>“<strong>${escapeHtml(query)}</strong>”</h1></div><div class="skeleton skeleton-title"></div>${Array(7).fill('<div class="skeleton" style="height:58px;margin:1px 0"></div>').join('')}</div>`
+  dom.page.innerHTML = `<div class="page-inner search-page">${searchField(query)}${searchTabs(query, type)}<div class="search-heading"><p>${escapeHtml(t('正在搜索'))}</p><h1>“<strong>${escapeHtml(query)}</strong>”</h1></div><div class="skeleton skeleton-title"></div>${Array(7).fill('<div class="skeleton" style="height:58px;margin:1px 0"></div>').join('')}</div>`
   try {
     const body = unwrap(await bridge.data.search(query, type))
     const results = unpackSearchResults(body)
     const tracks = results.songs.map(normalizeTrack)
     if (state.route !== 'search' || state.routePayload?.keywords !== query || state.routePayload?.type !== type) return
     state.pageTracks = tracks
-    const songSection = tracks.length ? `<section><div class="section-title"><h2>歌曲 · ${tracks.length}</h2></div>${renderTrackTable(tracks)}</section>` : ''
+    const songSection = tracks.length ? `<section><div class="section-title"><h2>${escapeHtml(t('歌曲'))} · ${tracks.length}</h2></div>${renderTrackTable(tracks)}</section>` : ''
     const entitySections = [
       searchEntities(results.artists, 'artists'),
       searchEntities(results.albums, 'albums'),
       searchEntities(results.playlists, 'playlists'),
       searchEntities(results.users, 'users'),
     ].join('')
-    const empty = !songSection && !entitySections ? `<div class="search-empty"><div class="empty-state-inner"><h2>没有找到相关结果</h2></div></div>` : ''
-    dom.page.innerHTML = `<div class="page-inner search-page">${searchField(query)}${searchTabs(query, type)}<div class="search-heading"><p>搜索结果</p><h1>“<strong>${escapeHtml(query)}</strong>”</h1></div>${songSection}${entitySections}${empty}</div>`
+    const empty = !songSection && !entitySections ? `<div class="search-empty"><div class="empty-state-inner"><h2>${escapeHtml(t('没有找到相关结果'))}</h2></div></div>` : ''
+    dom.page.innerHTML = `<div class="page-inner search-page">${searchField(query)}${searchTabs(query, type)}<div class="search-heading"><p>${escapeHtml(t('搜索结果'))}</p><h1>“<strong>${escapeHtml(query)}</strong>”</h1></div>${songSection}${entitySections}${empty}</div>`
   } catch (error) {
-    if (state.route === 'search' && state.routePayload?.keywords === query && state.routePayload?.type === type) renderError('搜索失败', error.message, () => searchNow(query, type))
+    if (state.route === 'search' && state.routePayload?.keywords === query && state.routePayload?.type === type) renderError(t('搜索失败'), error.message, () => searchNow(query, type))
   }
 }
 
 function renderEmpty(title, description, iconName = 'radio') {
   state.pageTracks = []
-  dom.page.innerHTML = `<div class="page-inner">${pageTitle(title)}<div class="empty-state"><div class="empty-state-inner"><div class="empty-icon">${icon(iconName)}</div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(description)}</p><button class="secondary-button" data-route-link="home">返回主页</button></div></div></div>`
+  dom.page.innerHTML = `<div class="page-inner">${pageTitle(title)}<div class="empty-state"><div class="empty-state-inner"><div class="empty-icon">${icon(iconName)}</div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(description)}</p><button class="secondary-button" data-route-link="home">${escapeHtml(t('返回主页'))}</button></div></div></div>`
 }
 
 function renderLoginRequired(title, description) {
   state.pageTracks = []
-  dom.page.innerHTML = `<div class="page-inner">${pageTitle(title)}<div class="empty-state"><div class="empty-state-inner"><div class="empty-icon">${icon('user')}</div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(description)}</p><button class="primary-button" data-login>${icon('user')} 立即登录</button></div></div></div>`
+  dom.page.innerHTML = `<div class="page-inner">${pageTitle(title)}<div class="empty-state"><div class="empty-state-inner"><div class="empty-icon">${icon('user')}</div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(description)}</p><button class="primary-button" data-login>${icon('user')} ${escapeHtml(t('立即登录'))}</button></div></div></div>`
 }
 
 function renderError(title, description, retry) {
   state.pageTracks = []
-  dom.page.innerHTML = `<div class="page-inner"><div class="empty-state"><div class="empty-state-inner"><div class="empty-icon">${icon('radio')}</div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(description)}</p><button class="secondary-button" id="retryButton">重试</button></div></div></div>`
+  dom.page.innerHTML = `<div class="page-inner"><div class="empty-state"><div class="empty-state-inner"><div class="empty-icon">${icon('radio')}</div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(t(description))}</p><button class="secondary-button" id="retryButton">${escapeHtml(t('重试'))}</button></div></div></div>`
   $('#retryButton')?.addEventListener('click', retry, { once: true })
 }
 
@@ -1573,14 +1578,14 @@ function filteredFontNames(filter = '') {
 
 function fontOptionMarkup(name) {
   void ensureLocalFont(name)
-  return `<button type="button" class="font-option ${state.fontFamily === name ? 'active' : ''}" data-font-name="${attr(name)}"><span class="font-option-preview" style="font-family:${attr(fontCss(name))}">${escapeHtml(fontLabel(name))}</span>${state.fontFamily === name ? '<small>当前</small>' : ''}</button>`
+  return `<button type="button" class="font-option ${state.fontFamily === name ? 'active' : ''}" data-font-name="${attr(name)}"><span class="font-option-preview" style="font-family:${attr(fontCss(name))}">${escapeHtml(fontLabel(name))}</span>${state.fontFamily === name ? `<small>${escapeHtml(t('当前'))}</small>` : ''}</button>`
 }
 
 function fontOptionsMarkup(filter = '') {
   const names = filteredFontNames(filter)
-  if (!names.length) return '<div class="font-picker-empty">没有匹配的字体</div>'
+  if (!names.length) return `<div class="font-picker-empty">${escapeHtml(t('没有匹配的字体'))}</div>`
   const visible = names.slice(0, FONT_BATCH_SIZE)
-  const hint = names.length > visible.length ? `<div class="font-picker-hint" data-font-more>向下滚动加载其余 ${names.length - visible.length} 个字体</div>` : ''
+  const hint = names.length > visible.length ? `<div class="font-picker-hint" data-font-more>${escapeHtml(t('向下滚动加载其余 {count} 个字体', { count: names.length - visible.length }))}</div>` : ''
   return visible.map(fontOptionMarkup).join('') + hint
 }
 
@@ -1593,13 +1598,13 @@ function renderFontOptions(filter = '', reset = true) {
   if (reset) list.innerHTML = ''
   $('[data-font-more]', list)?.remove()
   if (!names.length) {
-    list.innerHTML = '<div class="font-picker-empty">没有匹配的字体</div>'
+    list.innerHTML = `<div class="font-picker-empty">${escapeHtml(t('没有匹配的字体'))}</div>`
     return
   }
   const batch = names.slice(renderedCount, nextCount).map(fontOptionMarkup).join('')
   if (batch) list.insertAdjacentHTML('beforeend', batch)
   if (nextCount < names.length) {
-    list.insertAdjacentHTML('beforeend', `<div class="font-picker-hint" data-font-more>向下滚动加载其余 ${names.length - nextCount} 个字体</div>`)
+    list.insertAdjacentHTML('beforeend', `<div class="font-picker-hint" data-font-more>${escapeHtml(t('向下滚动加载其余 {count} 个字体', { count: names.length - nextCount }))}</div>`)
   }
 }
 
@@ -1612,13 +1617,13 @@ function floatingFontNames(filter = '') {
 
 function floatingFontOptionMarkup(name) {
   void ensureLocalFont(name)
-  return `<button type="button" class="font-option ${state.floatingLyrics.fontFamily === name ? 'active' : ''}" data-floating-font-name="${attr(name)}"><span class="font-option-preview" style="font-family:${attr(fontCss(name))}">${escapeHtml(fontLabel(name))}</span>${state.floatingLyrics.fontFamily === name ? '<small>当前</small>' : ''}</button>`
+  return `<button type="button" class="font-option ${state.floatingLyrics.fontFamily === name ? 'active' : ''}" data-floating-font-name="${attr(name)}"><span class="font-option-preview" style="font-family:${attr(fontCss(name))}">${escapeHtml(fontLabel(name))}</span>${state.floatingLyrics.fontFamily === name ? `<small>${escapeHtml(t('当前'))}</small>` : ''}</button>`
 }
 
 function floatingFontOptionsMarkup(filter = '') {
   const names = floatingFontNames(filter)
   const visible = names.slice(0, FONT_BATCH_SIZE)
-  const hint = names.length > visible.length ? `<div class="font-picker-hint" data-floating-font-more>向下滚动加载其余 ${names.length - visible.length} 个字体</div>` : ''
+  const hint = names.length > visible.length ? `<div class="font-picker-hint" data-floating-font-more>${escapeHtml(t('向下滚动加载其余 {count} 个字体', { count: names.length - visible.length }))}</div>` : ''
   return visible.map(floatingFontOptionMarkup).join('') + hint
 }
 
@@ -1631,22 +1636,22 @@ function renderFloatingFontOptions(filter = '', reset = true) {
   if (reset) list.innerHTML = ''
   $('[data-floating-font-more]', list)?.remove()
   if (!names.length) {
-    list.innerHTML = '<div class="font-picker-empty">没有匹配的字体</div>'
+    list.innerHTML = `<div class="font-picker-empty">${escapeHtml(t('没有匹配的字体'))}</div>`
     return
   }
   const batch = names.slice(renderedCount, nextCount).map(floatingFontOptionMarkup).join('')
   if (batch) list.insertAdjacentHTML('beforeend', batch)
   if (nextCount < names.length) {
-    list.insertAdjacentHTML('beforeend', `<div class="font-picker-hint" data-floating-font-more>向下滚动加载其余 ${names.length - nextCount} 个字体</div>`)
+    list.insertAdjacentHTML('beforeend', `<div class="font-picker-hint" data-floating-font-more>${escapeHtml(t('向下滚动加载其余 {count} 个字体', { count: names.length - nextCount }))}</div>`)
   }
 }
 
 function choicePickerMarkup(name, value, options, label) {
   const selected = options.find(([optionValue]) => optionValue === value) || options[0]
   return `<div class="choice-picker-control" data-choice-control="${attr(name)}">
-    <button type="button" class="setting-picker" data-choice-picker="${attr(name)}" aria-expanded="false" aria-label="${attr(label)}"><span>${escapeHtml(selected?.[1] || '')}</span><svg><use href="#i-chevron"/></svg></button>
+    <button type="button" class="setting-picker" data-choice-picker="${attr(name)}" aria-expanded="false" aria-label="${attr(label)}"><span>${escapeHtml(t(selected?.[1] || ''))}</span><svg><use href="#i-chevron"/></svg></button>
     <div class="choice-picker-popover" data-choice-popover="${attr(name)}" aria-hidden="true">
-      <div class="choice-picker-list" role="listbox" aria-label="${attr(label)}">${options.map(([optionValue, optionLabel]) => `<button type="button" class="choice-option ${optionValue === value ? 'active' : ''}" data-choice-value="${attr(optionValue)}" role="option" aria-selected="${optionValue === value}"><span>${escapeHtml(optionLabel)}</span>${optionValue === value ? '<small>当前</small>' : ''}</button>`).join('')}</div>
+      <div class="choice-picker-list" role="listbox" aria-label="${attr(label)}">${options.map(([optionValue, optionLabel]) => `<button type="button" class="choice-option ${optionValue === value ? 'active' : ''}" data-choice-value="${attr(optionValue)}" role="option" aria-selected="${optionValue === value}"><span>${escapeHtml(t(optionLabel))}</span>${optionValue === value ? `<small>${escapeHtml(t('当前'))}</small>` : ''}</button>`).join('')}</div>
     </div>
   </div>`
 }
@@ -1671,7 +1676,7 @@ function updateChoicePicker(control, value) {
     button.classList.toggle('active', active)
     button.setAttribute('aria-selected', String(active))
     $('small', button)?.remove()
-    if (active) button.insertAdjacentHTML('beforeend', '<small>当前</small>')
+    if (active) button.insertAdjacentHTML('beforeend', `<small>${escapeHtml(t('当前'))}</small>`)
   })
   picker?.setAttribute('aria-expanded', 'false')
   const popover = $('[data-choice-popover]', control)
@@ -1686,9 +1691,30 @@ async function configureFloatingLyrics(patch, { refresh = false } = {}) {
     if (refresh && state.route === 'settings-floating') renderFloatingLyricsSettings()
     return snapshot
   } catch (error) {
-    toast(error.message || '悬浮歌词设置未能保存', '操作失败', 'error')
+    toast(error.message || t('悬浮歌词设置未能保存'), t('操作失败'), 'error')
     return null
   }
+}
+
+function changeLanguage(code) {
+  i18n.setLanguage(code, { persist: true })
+  hideTrackMenu()
+  updateProfileUi()
+  renderPlaylistNav(state.userPlaylists)
+  updatePlayModeButtons()
+  setPlayIcons(!dom.audio.paused)
+  updateVolumeUi()
+  updateLikeButtonsOnly()
+  updateMaximizeButton($('#maximizeButton'), state.maximized)
+  updateMaximizeButton($('#immersiveMaximize'), state.maximized, state.fullScreen)
+  const fullScreenLabel = state.fullScreen ? t('退出全屏') : t('全屏')
+  $('#immersiveFullScreen').title = fullScreenLabel
+  $('#immersiveFullScreen').setAttribute('aria-label', fullScreenLabel)
+  renderQueue()
+  if (state.current && !state.lyrics.length) renderLyrics([], state.lyricsLoading ? 'loading' : 'empty')
+  renderSettings()
+  $('[data-choice-picker="language"]', dom.page)?.focus()
+  void configureFloatingLyrics({ language: code })
 }
 
 function cancelFloatingLyricsResetHold() {
@@ -1708,9 +1734,9 @@ async function performFloatingLyricsReset() {
     state.floatingLyrics = { ...state.floatingLyrics, ...(snapshot?.config || {}) }
     floatingColorDraft = null
     if (state.route === 'settings-floating') renderFloatingLyricsSettings()
-    toast('已重置')
+    toast(t('已重置'))
   } catch (error) {
-    toast(error.message || '重置失败', '操作失败', 'error')
+    toast(error.message || t('重置失败'), t('操作失败'), 'error')
   }
 }
 
@@ -1743,20 +1769,20 @@ function cancelApplicationResetHold() {
 async function performApplicationReset(button) {
   if (!button || button.disabled) return
   button.disabled = true
-  button.textContent = '正在重置…'
+  button.textContent = t('正在重置…')
   try {
     await bridge.app.reset()
   } catch (error) {
     button.disabled = false
-    button.textContent = '彻底重置'
-    toast(error.message || '应用重置失败', '操作失败', 'error')
+    button.textContent = t('彻底重置')
+    toast(error.message || t('应用重置失败'), t('操作失败'), 'error')
   }
 }
 
 function showApplicationResetConfirmation() {
   dom.modalLayer.innerHTML = `<div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="resetApplicationTitle">
-    <div class="modal-header"><div><h2 id="resetApplicationTitle">彻底重置 MenoRadio？</h2><p>登录账号、设置、播放状态和本地缓存都会被清除。此操作无法撤销。</p></div><button class="icon-button" data-close-modal>${icon('close')}</button></div>
-    <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>取消</button><button class="danger-button floating-reset-button application-reset-confirm-button" type="button" data-confirm-reset-application title="长按 3 秒彻底重置" aria-label="长按 3 秒彻底重置 MenoRadio"><span>彻底重置</span></button></div>
+    <div class="modal-header"><div><h2 id="resetApplicationTitle">${escapeHtml(t('彻底重置 MenoRadio？'))}</h2><p>${escapeHtml(t('登录账号、设置、播放状态和本地缓存都会被清除。此操作无法撤销。'))}</p></div><button class="icon-button" data-close-modal>${icon('close')}</button></div>
+    <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>${escapeHtml(t('取消'))}</button><button class="danger-button floating-reset-button application-reset-confirm-button" type="button" data-confirm-reset-application title="${attr(t('长按 3 秒彻底重置'))}" aria-label="${attr(t('长按 3 秒彻底重置 MenoRadio'))}"><span>${escapeHtml(t('彻底重置'))}</span></button></div>
   </div>`
   dom.modalLayer.classList.add('open')
   dom.modalLayer.setAttribute('aria-hidden', 'false')
@@ -1789,7 +1815,7 @@ async function loadSystemFonts() {
   if (state.fontsLoaded || state.fontsLoading) return
   state.fontsLoading = true
   const list = $('[data-font-list]', dom.page)
-  if (list) list.innerHTML = '<div class="font-picker-loading"><span></span>正在读取已安装字体</div>'
+  if (list) list.innerHTML = `<div class="font-picker-loading"><span></span>${escapeHtml(t('正在读取已安装字体'))}</div>`
   try {
     const fonts = await bridge.app.fonts()
     state.systemFonts = Array.isArray(fonts) ? fonts : []
@@ -1808,32 +1834,33 @@ async function loadSystemFonts() {
 
 function renderSettings() {
   const version = '0.17.0'
-  dom.page.innerHTML = `<div class="page-inner">${pageTitle('设置')}
+  dom.page.innerHTML = `<div class="page-inner">${pageTitle(t('设置'))}
     <div class="settings-grid">
-      <h2 class="settings-section-label">账户</h2>
-      <section class="settings-card"><div><h3>网易云音乐账户</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || '网易云用户') : '同步收藏、歌单与每日推荐'}</p></div><div class="setting-actions">${state.loggedIn ? '<button class="secondary-button" data-logout>退出登录</button>' : '<button class="primary-button" data-login>登录</button>'}</div></section>
-      <h2 class="settings-section-label">外观</h2>
-      <section class="settings-card theme-setting-card"><div><h3>配色方案</h3></div>${choicePickerMarkup('theme', state.theme, themes, '配色方案')}</section>
-      <section class="settings-card font-setting-card"><div><h3>字体</h3></div><div class="font-picker-control">
+      <h2 class="settings-section-label">${escapeHtml(t('账户'))}</h2>
+      <section class="settings-card"><div><h3>${escapeHtml(t('网易云音乐账户'))}</h3><p>${state.loggedIn ? escapeHtml(state.profile?.nickname || t('网易云用户')) : t('同步收藏、歌单与每日推荐')}</p></div><div class="setting-actions">${state.loggedIn ? `<button class="secondary-button" data-logout>${escapeHtml(t('退出登录'))}</button>` : `<button class="primary-button" data-login>${escapeHtml(t('登录'))}</button>`}</div></section>
+      <h2 class="settings-section-label">${escapeHtml(t('外观'))}</h2>
+      <section class="settings-card theme-setting-card"><div><h3>${escapeHtml(t('语言'))}</h3></div>${choicePickerMarkup('language', i18n.locale, i18n.languages, t('语言'))}</section>
+      <section class="settings-card theme-setting-card"><div><h3>${escapeHtml(t('配色方案'))}</h3></div>${choicePickerMarkup('theme', state.theme, themes, t('配色方案'))}</section>
+      <section class="settings-card font-setting-card"><div><h3>${escapeHtml(t('字体'))}</h3></div><div class="font-picker-control">
         <button type="button" class="setting-picker" data-font-picker aria-expanded="false"><span style="font-family:${attr(fontCss(state.fontFamily))}">${escapeHtml(fontLabel(state.fontFamily))}</span><svg><use href="#i-chevron"/></svg></button>
         <div class="font-picker-popover" data-font-popover aria-hidden="true">
-          <label class="font-picker-search"><svg><use href="#i-search"/></svg><input type="search" data-font-search placeholder="搜索已安装字体" autocomplete="off"></label>
+          <label class="font-picker-search"><svg><use href="#i-search"/></svg><input type="search" data-font-search placeholder="${attr(t('搜索已安装字体'))}" autocomplete="off"></label>
           <div class="font-picker-list" data-font-list>${fontOptionsMarkup()}</div>
         </div>
       </div></section>
-      <section class="settings-card"><div><h3>旧版播放页样式</h3></div><label class="setting-switch" title="使用 0.15 版本的播放页外观"><input type="checkbox" data-legacy-player ${state.legacyPlayer ? 'checked' : ''}><i></i></label></section>
-      <section class="settings-card" data-modern-player-setting ${state.legacyPlayer ? 'hidden' : ''}><div><h3>逐字高亮</h3></div><label class="setting-switch" title="支持逐字歌词的歌曲按演唱进度逐字点亮"><input type="checkbox" data-word-highlight ${state.wordHighlight ? 'checked' : ''}><i></i></label></section>
-      <section class="settings-card" data-modern-player-setting ${state.legacyPlayer ? 'hidden' : ''}><div><h3>景深模糊</h3></div><label class="setting-switch" title="远离当前句的歌词逐渐模糊"><input type="checkbox" data-depth-blur ${state.depthBlur ? 'checked' : ''}><i></i></label></section>
-      <h2 class="settings-section-label">播放</h2>
-      <section class="settings-card quality-setting-card"><div><h3>音质</h3></div>${choicePickerMarkup('audio-quality', state.audioQuality, audioQualities, '音质')}</section>
-      <section class="settings-card"><div><h3>音量均衡</h3></div><label class="setting-switch" title="按歌曲的 ReplayGain 固定调整播放增益"><input type="checkbox" data-audio-normalization ${state.audioNormalization ? 'checked' : ''}><i></i></label></section>
-      <section class="settings-card"><div><h3>媒体加载优化</h3></div><label class="setting-switch"><input type="checkbox" data-media-loading-optimization ${state.mediaLoadingOptimization ? 'checked' : ''}><i></i></label></section>
-      <section class="settings-card"><div><h3>快捷呼出播放队列</h3></div><label class="setting-switch" title="鼠标贴近窗口右侧时呼出播放队列"><input type="checkbox" data-quick-queue-reveal ${state.quickQueueReveal ? 'checked' : ''}><i></i></label></section>
-      <button type="button" class="settings-card settings-navigation-card" data-route-link="settings-floating"><h3>悬浮歌词</h3><svg><use href="#i-chevron"/></svg></button>
-      <h2 class="settings-section-label">数据</h2>
-      <section class="settings-card data-management-card"><div><h3>数据管理</h3></div><div class="setting-actions"><button class="secondary-button" data-clear-cache>清理缓存</button><button type="button" class="secondary-button application-reset-button" data-reset-application>重置</button></div></section>
-      <h2 class="settings-section-label">关于</h2>
-      <section class="settings-card"><div><h3>关于</h3><p>MenoRadio <span data-app-version>${escapeHtml(version)}</span> · 开发者 <button type="button" class="settings-link" data-external="https://github.com/ichiris">@ichiris</button></p></div><div class="setting-actions"><button class="secondary-button" data-external="https://github.com/ichiris/MenoRadio">项目主页 ${icon('external')}</button><button class="secondary-button" data-route-link="settings-licenses">开源许可</button><button class="secondary-button" data-check-update>检查更新</button></div></section>
+      <section class="settings-card theme-setting-card"><div><h3>${escapeHtml(t('播放器样式'))}</h3></div>${choicePickerMarkup('player-style', state.legacyPlayer ? 'legacy' : 'modern', playerStyles, t('播放器样式'))}</section>
+      <section class="settings-card" data-modern-player-setting ${state.legacyPlayer ? 'hidden' : ''}><div><h3>${escapeHtml(t('逐字高亮'))}</h3></div><label class="setting-switch" title="${attr(t('支持逐字歌词的歌曲按演唱进度逐字点亮'))}"><input type="checkbox" data-word-highlight ${state.wordHighlight ? 'checked' : ''}><i></i></label></section>
+      <section class="settings-card" data-modern-player-setting ${state.legacyPlayer ? 'hidden' : ''}><div><h3>${escapeHtml(t('景深模糊'))}</h3></div><label class="setting-switch" title="${attr(t('远离当前句的歌词逐渐模糊'))}"><input type="checkbox" data-depth-blur ${state.depthBlur ? 'checked' : ''}><i></i></label></section>
+      <h2 class="settings-section-label">${escapeHtml(t('播放'))}</h2>
+      <section class="settings-card quality-setting-card"><div><h3>${escapeHtml(t('音质'))}</h3></div>${choicePickerMarkup('audio-quality', state.audioQuality, audioQualities, t('音质'))}</section>
+      <section class="settings-card"><div><h3>${escapeHtml(t('音量均衡'))}</h3></div><label class="setting-switch" title="${attr(t('按歌曲的 ReplayGain 固定调整播放增益'))}"><input type="checkbox" data-audio-normalization ${state.audioNormalization ? 'checked' : ''}><i></i></label></section>
+      <section class="settings-card"><div><h3>${escapeHtml(t('媒体加载优化'))}</h3></div><label class="setting-switch"><input type="checkbox" data-media-loading-optimization ${state.mediaLoadingOptimization ? 'checked' : ''}><i></i></label></section>
+      <section class="settings-card"><div><h3>${escapeHtml(t('快捷呼出播放队列'))}</h3></div><label class="setting-switch" title="${attr(t('鼠标贴近窗口右侧时呼出播放队列'))}"><input type="checkbox" data-quick-queue-reveal ${state.quickQueueReveal ? 'checked' : ''}><i></i></label></section>
+      <button type="button" class="settings-card settings-navigation-card" data-route-link="settings-floating"><h3>${escapeHtml(t('悬浮歌词'))}</h3><svg><use href="#i-chevron"/></svg></button>
+      <h2 class="settings-section-label">${escapeHtml(t('数据'))}</h2>
+      <section class="settings-card data-management-card"><div><h3>${escapeHtml(t('数据管理'))}</h3></div><div class="setting-actions"><button class="secondary-button" data-clear-cache>${escapeHtml(t('清理缓存'))}</button><button type="button" class="secondary-button application-reset-button" data-reset-application>${escapeHtml(t('重置'))}</button></div></section>
+      <h2 class="settings-section-label">${escapeHtml(t('关于'))}</h2>
+      <section class="settings-card"><div><h3>${escapeHtml(t('关于'))}</h3><p>MenoRadio <span data-app-version>${escapeHtml(version)}</span> ${escapeHtml(t('· 开发者'))} <button type="button" class="settings-link" data-external="https://github.com/ichiris">@ichiris</button></p></div><div class="setting-actions"><button class="secondary-button" data-external="https://github.com/ichiris/MenoRadio">${escapeHtml(t('项目主页'))} ${icon('external')}</button><button class="secondary-button" data-route-link="settings-licenses">${escapeHtml(t('开源许可'))}</button><button class="secondary-button" data-check-update>${escapeHtml(t('检查更新'))}</button></div></section>
     </div>
   </div>`
   bridge.app.version().then((value) => {
@@ -1842,8 +1869,8 @@ function renderSettings() {
 }
 
 async function renderOpenSourceLicenses() {
-  dom.page.innerHTML = `<div class="page-inner licenses-page">${pageTitle('开源许可')}
-    <section class="license-document license-loading"><span class="lyric-loading-spinner" aria-hidden="true"></span><p>正在读取开源许可</p></section>
+  dom.page.innerHTML = `<div class="page-inner licenses-page">${pageTitle(t('开源许可'))}
+    <section class="license-document license-loading"><span class="lyric-loading-spinner" aria-hidden="true"></span><p>${escapeHtml(t('正在读取开源许可'))}</p></section>
   </div>`
   try {
     const source = await bridge.app.thirdPartyNotices()
@@ -1862,7 +1889,7 @@ async function renderOpenSourceLicenses() {
     const document = $('.license-document', dom.page)
     if (document) {
       document.className = 'license-document license-error'
-      document.innerHTML = '<h2>无法读取开源许可</h2><p>请稍后重试。</p>'
+      document.innerHTML = `<h2>${escapeHtml(t('无法读取开源许可'))}</h2><p>${escapeHtml(t('请稍后重试。'))}</p>`
     }
   }
 }
@@ -1874,37 +1901,37 @@ function renderFloatingLyricsSettings() {
   const color = hsvToHex(hsv)
   const boldIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h6.2c3.4 0 5.5 1.7 5.5 4.5 0 1.8-.9 3.1-2.4 3.8 2 .6 3.2 2 3.2 4.1 0 3.1-2.4 4.8-6.2 4.8H7V4Zm4 3v4h2c1.2 0 1.9-.7 1.9-2s-.8-2-2.1-2H11Zm0 7v4.2h2.3c1.5 0 2.3-.7 2.3-2.1S14.8 14 13.3 14H11Z"/></svg>'
   const italicIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4h9v3h-3.1l-3.8 10H15v3H6v-3h3l3.8-10H10V4Z"/></svg>'
-  dom.page.innerHTML = `<div class="page-inner floating-settings-page">${pageTitle('悬浮歌词')}
+  dom.page.innerHTML = `<div class="page-inner floating-settings-page">${pageTitle(t('悬浮歌词'))}
     <div class="settings-grid">
       <section class="settings-card floating-lyrics-setting-card">
         <div class="floating-lyrics-settings">
-          <div class="floating-setting-row"><span>悬浮歌词行为</span>${choicePickerMarkup('floating-lyrics-mode', floating.mode, floatingLyricModes, '悬浮歌词行为')}</div>
-          <div class="floating-setting-row"><span>锁定歌词</span><label class="setting-switch"><input type="checkbox" data-floating-setting="locked" ${floating.locked ? 'checked' : ''}><i></i></label></div>
-          <div class="floating-setting-row"><span>暂停时自动隐藏</span><label class="setting-switch"><input type="checkbox" data-floating-setting="hideWhenPaused" ${floating.hideWhenPaused ? 'checked' : ''}><i></i></label></div>
-          <div class="floating-setting-row"><span>字体</span><div class="font-picker-control floating-font-picker-control">
+          <div class="floating-setting-row"><span>${escapeHtml(t('悬浮歌词行为'))}</span>${choicePickerMarkup('floating-lyrics-mode', floating.mode, floatingLyricModes, t('悬浮歌词行为'))}</div>
+          <div class="floating-setting-row"><span>${escapeHtml(t('锁定歌词'))}</span><label class="setting-switch"><input type="checkbox" data-floating-setting="locked" ${floating.locked ? 'checked' : ''}><i></i></label></div>
+          <div class="floating-setting-row"><span>${escapeHtml(t('暂停时自动隐藏'))}</span><label class="setting-switch"><input type="checkbox" data-floating-setting="hideWhenPaused" ${floating.hideWhenPaused ? 'checked' : ''}><i></i></label></div>
+          <div class="floating-setting-row"><span>${escapeHtml(t('字体'))}</span><div class="font-picker-control floating-font-picker-control">
             <button type="button" class="setting-picker" data-floating-font-picker aria-expanded="false"><span style="font-family:${attr(fontCss(floating.fontFamily))}">${escapeHtml(fontLabel(floating.fontFamily))}</span><svg><use href="#i-chevron"/></svg></button>
             <div class="font-picker-popover floating-font-popover" data-floating-font-popover aria-hidden="true">
-              <label class="font-picker-search"><svg><use href="#i-search"/></svg><input type="search" data-floating-font-search placeholder="搜索已安装字体" autocomplete="off"></label>
+              <label class="font-picker-search"><svg><use href="#i-search"/></svg><input type="search" data-floating-font-search placeholder="${attr(t('搜索已安装字体'))}" autocomplete="off"></label>
               <div class="font-picker-list" data-floating-font-list>${floatingFontOptionsMarkup()}</div>
             </div>
           </div></div>
-          <div class="floating-setting-row"><label for="floatingFontSize">字体大小</label><div class="setting-number"><input id="floatingFontSize" type="number" min="12" max="120" step="1" value="${attr(floating.fontSize)}" data-floating-setting="fontSize"><span>px</span></div></div>
-          <div class="floating-setting-row"><span>字形</span><div class="floating-glyph-buttons"><button type="button" data-floating-toggle="bold" class="${floating.bold ? 'active' : ''}" title="加粗" aria-label="加粗">${boldIcon}</button><button type="button" data-floating-toggle="italic" class="${floating.italic ? 'active' : ''}" title="斜体" aria-label="斜体">${italicIcon}</button></div></div>
-          <div class="floating-setting-row"><span>对齐</span><div class="segmented-settings">${[['left','左'],['center','中'],['right','右']].map(([value, label]) => `<button type="button" data-floating-align="${value}" class="${floating.align === value ? 'active' : ''}">${label}</button>`).join('')}</div></div>
-          <div class="floating-setting-row"><span>文字效果</span><div class="setting-checks"><label><input type="checkbox" data-floating-setting="shadow" ${floating.shadow ? 'checked' : ''}>阴影</label><label><input type="checkbox" data-floating-setting="stroke" ${floating.stroke ? 'checked' : ''}>描边</label></div></div>
-          <div class="floating-setting-row floating-color-row"><span>文字颜色</span><div class="floating-color-control">
-            <button type="button" class="floating-color-swatch" data-floating-color-picker style="--swatch:${attr(floating.color)}" aria-expanded="false" aria-label="选择文字颜色"></button>
+          <div class="floating-setting-row"><label for="floatingFontSize">${escapeHtml(t('字体大小'))}</label><div class="setting-number"><input id="floatingFontSize" type="number" min="12" max="120" step="1" value="${attr(floating.fontSize)}" data-floating-setting="fontSize"><span>px</span></div></div>
+          <div class="floating-setting-row"><span>${escapeHtml(t('字形'))}</span><div class="floating-glyph-buttons"><button type="button" data-floating-toggle="bold" class="${floating.bold ? 'active' : ''}" title="${attr(t('加粗'))}" aria-label="${attr(t('加粗'))}">${boldIcon}</button><button type="button" data-floating-toggle="italic" class="${floating.italic ? 'active' : ''}" title="${attr(t('斜体'))}" aria-label="${attr(t('斜体'))}">${italicIcon}</button></div></div>
+          <div class="floating-setting-row"><span>${escapeHtml(t('对齐'))}</span><div class="segmented-settings">${[['left',t('左')],['center',t('中')],['right',t('右')]].map(([value, label]) => `<button type="button" data-floating-align="${value}" class="${floating.align === value ? 'active' : ''}">${label}</button>`).join('')}</div></div>
+          <div class="floating-setting-row"><span>${escapeHtml(t('文字效果'))}</span><div class="setting-checks"><label><input type="checkbox" data-floating-setting="shadow" ${floating.shadow ? 'checked' : ''}>${escapeHtml(t('阴影'))}</label><label><input type="checkbox" data-floating-setting="stroke" ${floating.stroke ? 'checked' : ''}>${escapeHtml(t('描边'))}</label></div></div>
+          <div class="floating-setting-row floating-color-row"><span>${escapeHtml(t('文字颜色'))}</span><div class="floating-color-control">
+            <button type="button" class="floating-color-swatch" data-floating-color-picker style="--swatch:${attr(floating.color)}" aria-expanded="false" aria-label="${attr(t('选择文字颜色'))}"></button>
             <div class="floating-color-popover" data-floating-color-popover hidden style="--picker-hue:${hsv.h};--picker-x:${hsv.s * 100}%;--picker-y:${(1 - hsv.v) * 100}%">
               <div class="floating-color-field" data-floating-color-field><i></i></div>
-              <input type="range" min="0" max="360" step="1" value="${hsv.h}" data-floating-color-hue aria-label="色相">
+              <input type="range" min="0" max="360" step="1" value="${hsv.h}" data-floating-color-hue aria-label="${attr(t('色相'))}">
               <output data-floating-color-value>${color.toUpperCase()}</output>
-              <label class="floating-color-rgb"><span>RGB</span><input type="text" inputmode="numeric" value="${attr(hexToRgbText(color))}" data-floating-color-rgb aria-label="RGB 颜色值"></label>
-              <div class="floating-color-actions"><button type="button" class="secondary-button" data-floating-color-cancel>取消</button><button type="button" class="primary-button" data-floating-color-apply>应用</button></div>
+              <label class="floating-color-rgb"><span>RGB</span><input type="text" inputmode="numeric" value="${attr(hexToRgbText(color))}" data-floating-color-rgb aria-label="${attr(t('RGB 颜色值'))}"></label>
+              <div class="floating-color-actions"><button type="button" class="secondary-button" data-floating-color-cancel>${escapeHtml(t('取消'))}</button><button type="button" class="primary-button" data-floating-color-apply>${escapeHtml(t('应用'))}</button></div>
             </div>
           </div></div>
-          <div class="floating-setting-row"><label for="floatingOpacity">不透明度</label><div class="setting-range"><input id="floatingOpacity" type="range" min=".15" max="1" step=".01" value="${attr(floating.opacity)}" data-floating-setting="opacity"><output>${Math.round(floating.opacity * 100)}%</output></div></div>
-          <div class="floating-setting-row"><span>无翻译时</span>${choicePickerMarkup('floating-no-translation-position', floating.noTranslationPosition, floatingLyricVerticalPositions, '无翻译时的位置')}</div>
-          <div class="floating-setting-footer"><p>解除锁定后可拖动和缩放；若不慎将悬浮歌词拖动到了莫名其妙的位置，可使用重置来恢复。</p><button type="button" class="secondary-button floating-reset-button" data-reset-floating-lyrics title="长按 3 秒重置" aria-label="长按 3 秒重置悬浮歌词"><span>重置悬浮歌词</span></button></div>
+          <div class="floating-setting-row"><label for="floatingOpacity">${escapeHtml(t('不透明度'))}</label><div class="setting-range"><input id="floatingOpacity" type="range" min=".15" max="1" step=".01" value="${attr(floating.opacity)}" data-floating-setting="opacity"><output>${Math.round(floating.opacity * 100)}%</output></div></div>
+          <div class="floating-setting-row"><span>${escapeHtml(t('无翻译时'))}</span>${choicePickerMarkup('floating-no-translation-position', floating.noTranslationPosition, floatingLyricVerticalPositions, t('无翻译时的位置'))}</div>
+          <div class="floating-setting-footer"><p>${escapeHtml(t('解除锁定后可拖动和缩放；若不慎将悬浮歌词拖动到了莫名其妙的位置，可使用重置来恢复。'))}</p><button type="button" class="secondary-button floating-reset-button" data-reset-floating-lyrics title="${attr(t('长按 3 秒重置'))}" aria-label="${attr(t('长按 3 秒重置悬浮歌词'))}"><span>${escapeHtml(t('重置悬浮歌词'))}</span></button></div>
         </div>
       </section>
     </div>
@@ -1937,14 +1964,14 @@ function syncFloatingLyricsSettingsControls() {
   if (modeControl) {
     const option = floatingLyricModes.find(([value]) => value === floating.mode)
     const pickerLabel = $('[data-choice-picker] span', modeControl)
-    if (pickerLabel && option) pickerLabel.textContent = option[1]
+    if (pickerLabel && option) pickerLabel.textContent = t(option[1])
     $$('[data-choice-value]', modeControl).forEach((button) => button.classList.toggle('active', button.dataset.choiceValue === floating.mode))
   }
   const positionControl = $('[data-choice-control="floating-no-translation-position"]', dom.page)
   if (positionControl) {
     const option = floatingLyricVerticalPositions.find(([value]) => value === floating.noTranslationPosition)
     const pickerLabel = $('[data-choice-picker] span', positionControl)
-    if (pickerLabel && option) pickerLabel.textContent = option[1]
+    if (pickerLabel && option) pickerLabel.textContent = t(option[1])
     $$('[data-choice-value]', positionControl).forEach((button) => button.classList.toggle('active', button.dataset.choiceValue === floating.noTranslationPosition))
   }
 }
@@ -1953,19 +1980,19 @@ async function clearApplicationCache(button) {
   if (!button || button.disabled) return
   const original = button.innerHTML
   button.disabled = true
-  button.textContent = '正在清理…'
+  button.textContent = t('正在清理…')
   try {
     const result = await bridge.app.clearCache()
     const size = formatBytes(result?.clearedBytes || 0)
     if (state.route === 'settings') {
-      button.textContent = '清理缓存'
+      button.textContent = t('清理缓存')
       button.disabled = false
     }
-    toast(`已清理 ${size} 缓存`)
+    toast(t('已清理 {size} 缓存', { size: size }))
   } catch (error) {
     button.disabled = false
     button.innerHTML = original
-    toast(error.message || '缓存清理失败', '操作失败', 'error')
+    toast(error.message || t('缓存清理失败'), t('操作失败'), 'error')
   }
 }
 
@@ -1984,7 +2011,7 @@ async function renderRoute() {
     case 'user': return renderUser(state.routePayload)
     case 'user-connections': return renderUserConnections(state.routePayload)
     case 'recent':
-      dom.page.innerHTML = `<div class="page-inner">${pageTitle('最近播放', state.recent.length ? `最近听过的 ${state.recent.length} 首歌` : '还没有播放记录', state.recent.length ? '<button type="button" class="secondary-button" data-clear-recent>清空</button>' : '')}${renderTrackTable(state.recent, { emptyDescription: '播放过的歌曲会出现在这里。' })}</div>`
+      dom.page.innerHTML = `<div class="page-inner">${pageTitle(t('最近播放'), state.recent.length ? t('最近听过的 {count} 首歌', { count: state.recent.length }) : t('还没有播放记录'), state.recent.length ? `<button type="button" class="secondary-button" data-clear-recent>${escapeHtml(t('清空'))}</button>` : '')}${renderTrackTable(state.recent, { emptyDescription: t('播放过的歌曲会出现在这里。') })}</div>`
       return
     case 'settings': return renderSettings()
     case 'settings-floating': return renderFloatingLyricsSettings()
@@ -2055,8 +2082,10 @@ function updateRange(element, value, max = 1) {
 
 function setPlayIcons(playing) {
   const symbol = playing ? 'pause' : 'play'
-  dom.playButton.innerHTML = icon(symbol)
-  dom.immersivePlay.innerHTML = icon(symbol)
+  for (const button of [dom.playButton, dom.immersivePlay]) {
+    button.innerHTML = icon(symbol)
+    button.setAttribute('aria-label', playing ? t('暂停') : t('播放'))
+  }
   dom.immersive.classList.toggle('paused', !playing)
 }
 
@@ -2078,12 +2107,12 @@ function applyEffectiveAudioVolume() {
 function updateVolumeUi() {
   const silent = dom.audio.muted || state.userVolume <= .001
   const symbol = silent ? 'volume-muted' : 'volume'
-  const label = silent ? '取消静音' : '静音'
+  const label = silent ? t('取消静音') : t('静音')
   for (const button of [$('#volumeButton'), $('#immersiveVolume'), $('#immersiveMuteToggle')]) {
     if (!button) continue
     button.innerHTML = icon(symbol)
     button.classList.toggle('active', silent)
-    button.setAttribute('aria-label', button.id === 'immersiveVolume' ? '调节音量' : label)
+    button.setAttribute('aria-label', button.id === 'immersiveVolume' ? t('调节音量') : label)
   }
   for (const range of [$('#volumeRange'), $('#immersiveVolumeRange')]) {
     if (range) updateRange(range, state.userVolume, 1)
@@ -2181,7 +2210,7 @@ async function installAudioDeviceGuard() {
     if (!previous || !next || previous !== next) {
       state.playbackIntentPlaying = false
       dom.audio.pause()
-      toast('音频设备发生变动，播放已暂停。', '已暂停')
+      toast(t('音频设备发生变动，播放已暂停。'), t('已暂停'))
     }
   })
 }
@@ -2213,7 +2242,7 @@ function restorePlaybackSessionTrack(track) {
   // a string and abort application initialization.
   return {
     id: String(track.id),
-    name: String(track.name || '未命名歌曲'),
+    name: String(track.name || t('未命名歌曲')),
     artist: String(track.artist || ''),
     album: String(track.album || ''),
     cover: String(track.cover || ''),
@@ -2380,10 +2409,10 @@ async function startPrivateRadio() {
   state.radioLoading = true
   try {
     const tracks = await fetchPrivateRadioTracks()
-    if (!tracks.length) throw new Error('暂时没有取得私人漫游歌曲')
+    if (!tracks.length) throw new Error(t('暂时没有取得私人漫游歌曲'))
     await playTracks(tracks, 0, { radio: true })
   } catch (error) {
-    toast(error.message || '无法开始私人漫游', '私人漫游', 'error')
+    toast(error.message || t('无法开始私人漫游'), t('私人漫游'), 'error')
   } finally {
     state.radioLoading = false
   }
@@ -2422,10 +2451,10 @@ async function playPlaylistFromCard(button) {
   button.setAttribute('aria-busy', 'true')
   try {
     const { tracks } = await fetchPlaylist(id)
-    if (!tracks.length) return toast('暂无歌曲')
+    if (!tracks.length) return toast(t('暂无歌曲'))
     await playAllTracks(tracks)
   } catch (error) {
-    toast(error.message || '歌单播放失败', '播放失败', 'error')
+    toast(error.message || t('歌单播放失败'), t('播放失败'), 'error')
   } finally {
     if (button.isConnected) {
       delete button.dataset.loading
@@ -2506,13 +2535,13 @@ async function handlePlaybackFailure(track, generation, error) {
   }
   state.playbackFailedTrackIds.add(trackId)
   state.consecutivePlaybackFailures = state.playbackFailedTrackIds.size
-  toast(error?.message || '这首歌暂时无法播放，已自动跳过。', '播放失败，正在跳过', 'error')
+  toast(error?.message || t('这首歌暂时无法播放，已自动跳过。'), t('播放失败，正在跳过'), 'error')
   const availableIds = new Set(state.queue.map((item) => String(item.id)))
   const allUnavailable = availableIds.size > 0 && [...availableIds].every((id) => state.playbackFailedTrackIds.has(id))
   if (allUnavailable) {
     state.playbackIntentPlaying = false
     dom.audio.pause()
-    toast('播放队列中的歌曲目前都无法播放。', '已停止自动跳过', 'error')
+    toast(t('播放队列中的歌曲目前都无法播放。'), t('已停止自动跳过'), 'error')
     return
   }
   state.playbackFailureTimer = window.setTimeout(() => {
@@ -2812,7 +2841,7 @@ async function ensureAudioSource(track, generation = state.audioLoadGeneration, 
       if (preload && upcomingAudioPreloads.get(preload.key) === preload) upcomingAudioPreloads.delete(preload.key)
       if (String(state.current?.id) !== trackId || generation !== state.audioLoadGeneration) return false
       let url = audioSource?.url
-      if (!url) throw playbackError('这首歌暂时无法播放，可能需要会员或所在地区没有版权。', 'unavailable')
+      if (!url) throw playbackError(t('这首歌暂时无法播放，可能需要会员或所在地区没有版权。'), 'unavailable')
       state.currentAudioSource = audioSource
       state.trackReplayGainDb = replayGainDb(audioSource.gain)
       applyEffectiveAudioVolume()
@@ -2843,7 +2872,7 @@ async function ensureAudioSource(track, generation = state.audioLoadGeneration, 
       if (String(state.current?.id) !== trackId || generation !== state.audioLoadGeneration) return false
       state.audioSourceTrackId = ''
       if (state.passiveAudioGeneration !== generation && !isSupersededPlaybackError(error)) {
-        handlePlaybackFailure(track, generation, error?.playbackKind ? error : playbackError(error?.message || '音频连接失败', 'network'))
+        handlePlaybackFailure(track, generation, error?.playbackKind ? error : playbackError(error?.message || t('音频连接失败'), 'network'))
       }
       return false
     }
@@ -2931,7 +2960,7 @@ async function loadTrack(track, autoplay = true) {
   } catch (error) {
     if (state.current?.id !== loadId || generation !== state.audioLoadGeneration) return
     if (isSupersededPlaybackError(error)) return
-    handlePlaybackFailure(track, generation, error?.playbackKind ? error : playbackError(error?.message || '音频连接失败', 'network'))
+    handlePlaybackFailure(track, generation, error?.playbackKind ? error : playbackError(error?.message || t('音频连接失败'), 'network'))
   }
 }
 
@@ -2979,8 +3008,8 @@ function updateNowPlaying(options = {}) {
   const liked = state.liked.has(track.id)
   $('#likeButton').classList.toggle('active', liked)
   $('#immersiveLike').classList.toggle('active', liked)
-  $('#likeButton').setAttribute('aria-label', liked ? '从我喜欢的音乐移除' : '添加到我喜欢的音乐')
-  $('#immersiveLike').setAttribute('aria-label', liked ? '从我喜欢的音乐移除' : '添加到我喜欢的音乐')
+  $('#likeButton').setAttribute('aria-label', liked ? t('从我喜欢的音乐移除') : t('添加到我喜欢的音乐'))
+  $('#immersiveLike').setAttribute('aria-label', liked ? t('从我喜欢的音乐移除') : t('添加到我喜欢的音乐'))
   if ('mediaSession' in navigator) {
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
@@ -3002,7 +3031,7 @@ function updateLikeButtonsOnly() {
   for (const button of [$('#likeButton'), $('#immersiveLike')]) {
     if (!button) continue
     button.classList.toggle('active', liked)
-    button.setAttribute('aria-label', liked ? '从我喜欢的音乐移除' : '添加到我喜欢的音乐')
+    button.setAttribute('aria-label', liked ? t('从我喜欢的音乐移除') : t('添加到我喜欢的音乐'))
   }
 }
 
@@ -3224,7 +3253,7 @@ async function togglePlayback() {
       if (error?.name === 'AbortError' || /interrupted by a new load|interrupted by a call to pause/i.test(String(error?.message || ''))) return
       if (error?.name === 'NotAllowedError') {
         state.playbackIntentPlaying = false
-        return toast(error.message, '无法开始播放', 'error')
+        return toast(error.message, t('无法开始播放'), 'error')
       }
       handlePlaybackFailure(state.current, generation, error)
     }
@@ -3238,7 +3267,7 @@ async function togglePlayback() {
       if (error?.name === 'AbortError' || /interrupted by a new load|interrupted by a call to pause/i.test(String(error?.message || ''))) return
       if (error?.name === 'NotAllowedError') {
         state.playbackIntentPlaying = false
-        return toast(error.message, '无法开始播放', 'error')
+        return toast(error.message, t('无法开始播放'), 'error')
       }
       handlePlaybackFailure(state.current, generation, error)
     })
@@ -3260,7 +3289,7 @@ async function nextTrack(direction = 1, options = {}) {
         state.queue.push(...tracks.filter((track) => !existing.has(String(track.id))))
         renderQueue()
       } catch (error) {
-        toast(error.message || '无法取得下一首私人漫游歌曲', '私人漫游', 'error')
+        toast(error.message || t('无法取得下一首私人漫游歌曲'), t('私人漫游'), 'error')
         return
       }
     }
@@ -3320,13 +3349,13 @@ async function toggleLike() {
       succeeded = await modifyPlaylist(liked ? 'del' : 'add', likedPlaylist.id, track, { quiet: true })
     } else {
       const body = unwrap(await bridge.data.like(track.id, !liked))
-      if (body?.code && Number(body.code) !== 200) throw new Error(body.message || '网易云音乐未接受本次操作')
+      if (body?.code && Number(body.code) !== 200) throw new Error(body.message || t('网易云音乐未接受本次操作'))
       setTrackLiked(track.id, !liked)
       succeeded = true
     }
-    if (succeeded) toast(liked ? '已从我喜欢的音乐移除' : '已添加到我喜欢的音乐')
+    if (succeeded) toast(liked ? t('已从我喜欢的音乐移除') : t('已添加到我喜欢的音乐'))
   } catch (error) {
-    toast(error.message || '网易云音乐未接受本次操作', '同步收藏失败', 'error')
+    toast(error.message || t('网易云音乐未接受本次操作'), t('同步收藏失败'), 'error')
   } finally {
     state.likePending.delete(track.id)
     for (const button of [$('#likeButton'), $('#immersiveLike')]) button?.removeAttribute('disabled')
@@ -3343,9 +3372,9 @@ function cyclePlayMode() {
 
 function updatePlayModeButtons() {
   const config = {
-    'repeat-one': { icon: 'repeat-one', label: '单曲循环' },
-    'repeat-all': { icon: 'repeat', label: '列表循环' },
-    shuffle: { icon: 'shuffle', label: '随机播放' },
+    'repeat-one': { icon: 'repeat-one', label: t('单曲循环') },
+    'repeat-all': { icon: 'repeat', label: t('列表循环') },
+    shuffle: { icon: 'shuffle', label: t('随机播放') },
   }[state.playMode]
   for (const button of [$('#playModeButton'), $('#immersiveModeButton')]) {
     if (!button) continue
@@ -3434,8 +3463,8 @@ function renderLyrics(lines, status = 'ready') {
   resetLyricWords()
   if (!lines.length) {
     dom.lyricsScroller.innerHTML = status === 'loading'
-      ? `<div class="lyric-loading" role="status" aria-label="正在加载歌词"><span class="lyric-loading-spinner" aria-hidden="true"></span></div>`
-      : `<div class="lyric-empty"><strong>暂无歌词</strong><span>让旋律自己说话</span></div>`
+      ? `<div class="lyric-loading" role="status" aria-label="${attr(t('正在加载歌词'))}"><span class="lyric-loading-spinner" aria-hidden="true"></span></div>`
+      : `<div class="lyric-empty"><strong>${escapeHtml(t('暂无歌词'))}</strong><span>${escapeHtml(t('让旋律自己说话'))}</span></div>`
     syncFloatingLyrics(true)
     return
   }
@@ -3977,8 +4006,8 @@ function smoothManualLyricScroll(delta) {
 function queueMarkup() {
   return state.queue.length ? state.queue.map((track, index) => {
     const active = index === state.queueIndex
-    return `<div class="queue-item ${active ? 'active' : ''}" data-queue-index="${index}" role="button" tabindex="0" draggable="true"${active ? ' aria-current="true"' : ''}><img ${thumbnailAttributes(track.cover, thumbnailPixelSize(38))} alt=""><span class="queue-item-copy"><strong>${escapeHtml(track.name)}</strong><small>${escapeHtml(track.artist)}</small></span>${active ? `<span class="queue-now">${icon('play')} 正在播放</span>` : `<span class="queue-item-time">${formatDuration(track.duration)}</span>`}<button type="button" class="queue-remove" data-queue-remove aria-label="从播放队列移除 ${attr(track.name)}" title="从队列移除">${icon('close')}</button></div>`
-  }).join('') : `<div class="empty-state"><div class="empty-state-inner"><p>播放队列还是空的</p></div></div>`
+    return `<div class="queue-item ${active ? 'active' : ''}" data-queue-index="${index}" role="button" tabindex="0" draggable="true"${active ? ' aria-current="true"' : ''}><img ${thumbnailAttributes(track.cover, thumbnailPixelSize(38))} alt=""><span class="queue-item-copy"><strong>${escapeHtml(track.name)}</strong><small>${escapeHtml(track.artist)}</small></span>${active ? `<span class="queue-now">${icon('play')} ${escapeHtml(t('正在播放'))}</span>` : `<span class="queue-item-time">${formatDuration(track.duration)}</span>`}<button type="button" class="queue-remove" data-queue-remove aria-label="${attr(t('从播放队列移除 {name}', { name: track.name }))}" title="${attr(t('从队列移除'))}">${icon('close')}</button></div>`
+  }).join('') : `<div class="empty-state"><div class="empty-state-inner"><p>${escapeHtml(t('播放队列还是空的'))}</p></div></div>`
 }
 
 function releaseClosedQueueDom(delay = 0) {
@@ -4007,7 +4036,7 @@ function scrollQueueToCurrent(container, behavior = 'smooth') {
 }
 
 function renderQueue(options = {}) {
-  const summary = `${state.queue.length} 首歌曲`
+  const summary = t('{count} 首歌曲', { count: state.queue.length })
   $('#queueSummary').textContent = summary
   $('#immersiveQueueSummary').textContent = summary
   const drawerOpen = dom.queueDrawer.classList.contains('open')
@@ -4044,7 +4073,7 @@ function clearUpcomingQueue() {
   }
   if (state.queue.length === 1 && String(state.queue[0]?.id) === String(state.current.id)) {
     clearPlaybackQueue()
-    toast('播放队列已清空')
+    toast(t('播放队列已清空'))
     return
   }
   state.queue = [state.current]
@@ -4052,7 +4081,7 @@ function clearUpcomingQueue() {
   state.queueIndex = 0
   resetPlaybackFailureCycle()
   renderQueue()
-  toast('当前歌曲会继续播放。', '已清空接下来播放')
+  toast(t('当前歌曲会继续播放。'), t('已清空接下来播放'))
 }
 
 function clearPlaybackQueue() {
@@ -4123,14 +4152,14 @@ function insertTrackIntoQueue(track, insertionIndex = state.queue.length) {
     state.queueIndex = currentQueueIndex()
     state.queueSource = [...state.queue]
     renderQueue()
-    toast(`已调整队列位置：${track.name}`)
+    toast(t('已调整队列位置：{name}', { name: track.name }))
     return
   }
   state.queue.splice(next, 0, track)
   if (next <= state.queueIndex) state.queueIndex += 1
   if (!state.queueSource.some((item) => String(item.id) === String(track.id))) state.queueSource.push(track)
   renderQueue()
-  toast(`已加入播放队列：${track.name}`)
+  toast(t('已加入播放队列：{name}', { name: track.name }))
 }
 
 function ownPlaylistById(id) {
@@ -4149,9 +4178,9 @@ function refreshCurrentPlaylistTrackList() {
   const tracks = query
     ? state.playlistTracks.filter((track) => `${track.name} ${track.artist} ${track.album}`.toLocaleLowerCase().includes(query))
     : state.playlistTracks
-  list.innerHTML = tracks.length ? renderTrackTable(tracks) : '<div class="empty-state playlist-empty-state"><div class="empty-state-inner"><div class="empty-icon">' + icon('list') + '</div><h2>没有符合条件的歌曲</h2></div></div>'
+  list.innerHTML = tracks.length ? renderTrackTable(tracks) : '<div class="empty-state playlist-empty-state"><div class="empty-state-inner"><div class="empty-icon">' + icon('list') + `</div><h2>${escapeHtml(t('没有符合条件的歌曲'))}</h2></div></div>`
   const count = $('[data-playlist-result-count]', dom.page)
-  if (count) count.textContent = `${tracks.length} 首`
+  if (count) count.textContent = t('{count} 首', { count: tracks.length })
 }
 
 async function reorderCurrentPlaylist(track, targetTrack, after = false, options = {}) {
@@ -4170,13 +4199,13 @@ async function reorderCurrentPlaylist(track, targetTrack, after = false, options
   refreshCurrentPlaylistTrackList()
   try {
     const body = unwrap(await bridge.data.playlistReorder(state.currentPlaylist.id, state.playlistTracks.map((item) => item.id)))
-    if (body?.code && Number(body.code) !== 200) throw new Error(body.message || '网易云音乐未接受新的歌曲顺序')
-    if (!options.quiet) toast(`已调整顺序：${track.name}`)
+    if (body?.code && Number(body.code) !== 200) throw new Error(body.message || t('网易云音乐未接受新的歌曲顺序'))
+    if (!options.quiet) toast(t('已调整顺序：{name}', { name: track.name }))
     return true
   } catch (error) {
     state.playlistTracks = previous
     refreshCurrentPlaylistTrackList()
-    toast(error.message || '无法调整歌单顺序', '调整失败', 'error')
+    toast(error.message || t('无法调整歌单顺序'), t('调整失败'), 'error')
     return false
   }
 }
@@ -4189,10 +4218,10 @@ async function addTrackToCurrentPlaylistAt(track, targetTrack = null, after = fa
     if (targetTrack && String(targetTrack.id) !== String(track.id)) {
       await reorderCurrentPlaylist(track, targetTrack, after, { quiet: true })
     }
-    toast(`已添加到歌单：${track.name}`)
+    toast(t('已添加到歌单：{name}', { name: track.name }))
     return true
   } catch (error) {
-    toast(error.message || '无法添加到歌单', '操作失败', 'error')
+    toast(error.message || t('无法添加到歌单'), t('操作失败'), 'error')
     return false
   }
 }
@@ -4235,14 +4264,14 @@ function showTrackDragHud(track) {
     document.body.append(hud)
   }
   const cover = track.cover ? `<img src="${attr(track.cover)}" alt="">` : '<span class="track-drag-hud-cover"></span>'
-  hud.innerHTML = `${cover}<span class="track-drag-hud-copy"><strong>${escapeHtml(track.name)}</strong><small>${escapeHtml(track.artist)}</small></span><span class="track-drag-hud-status">移动歌曲</span>`
+  hud.innerHTML = `${cover}<span class="track-drag-hud-copy"><strong>${escapeHtml(track.name)}</strong><small>${escapeHtml(track.artist)}</small></span><span class="track-drag-hud-status">${escapeHtml(t('移动歌曲'))}</span>`
   hud.classList.toggle('immersive', dom.immersive.classList.contains('open'))
   hud.classList.remove('forbidden')
   hud.setAttribute('aria-hidden', 'false')
   document.body.classList.add('track-dragging')
 }
 
-function setTrackDragFeedback(type = 'move', label = '移动歌曲') {
+function setTrackDragFeedback(type = 'move', label = t('移动歌曲')) {
   const hud = $('#trackDragHud')
   if (!hud) return
   if (state.dragFeedbackType === type && state.dragFeedbackLabel === label) return
@@ -4334,7 +4363,7 @@ function beginTrackDrag(track, source, event, options = {}) {
   event.dataTransfer.setData('text/plain', track.name)
   event.dataTransfer.setDragImage(transparentDragImage(), 0, 0)
   showTrackDragHud(track)
-  setTrackDragFeedback('move', source === 'queue' ? '调整播放顺序' : '拖到播放队列或歌单')
+  setTrackDragFeedback('move', source === 'queue' ? t('调整播放顺序') : t('拖到播放队列或歌单'))
 }
 
 function clearDragMarkers() {
@@ -4398,7 +4427,7 @@ function cancelActiveTrackDrag(event) {
   event?.stopImmediatePropagation?.()
   state.dragCancelled = true
   state.dragDropHandled = 'cancelled'
-  setTrackDragFeedback('forbidden', '已取消拖动')
+  setTrackDragFeedback('forbidden', t('已取消拖动'))
   window.setTimeout(finishTrackDrag, 0)
   return true
 }
@@ -4481,16 +4510,16 @@ function showTrackMenu(anchor, track, point = null, { fromPlayer = false } = {})
   const playlistChoices = state.loggedIn
     ? ownPlaylists.filter((playlist) => String(playlist.id) !== playlistId).slice(0, 18)
     : []
-  dom.trackMenu.innerHTML = `<button type="button" class="track-menu-title" data-track-menu-action="copy-info" title="复制歌曲信息" aria-label="复制歌曲信息：${attr(track.name)}">${escapeHtml(track.name)}</button>
-    <button data-track-menu-action="${fromPlayer ? 'resume' : 'play'}" ${fromPlayer && !dom.audio.paused ? 'disabled' : ''}>${icon('play')}<span>${fromPlayer ? (dom.audio.paused ? '继续播放' : '正在播放') : '播放'}</span></button>
-    <button data-track-menu-action="next">${icon('next')}<span>下一首播放</span></button>
-    ${trackArtists.length === 1 ? `<button data-track-artist-id="${attr(trackArtists[0].id)}" data-track-artist-name="${attr(trackArtists[0].name)}">${icon('user')}<span>歌手：${escapeHtml(trackArtists[0].name)}</span></button>` : ''}
-    ${trackArtists.length > 1 ? `<button data-track-menu-action="choose-artist">${icon('user')}<span>歌手</span><small>›</small></button>
+  dom.trackMenu.innerHTML = `<button type="button" class="track-menu-title" data-track-menu-action="copy-info" title="${attr(t('复制歌曲信息'))}" aria-label="${attr(t('复制歌曲信息：{name}', { name: track.name }))}">${escapeHtml(track.name)}</button>
+    <button data-track-menu-action="${fromPlayer ? 'resume' : 'play'}" ${fromPlayer && !dom.audio.paused ? 'disabled' : ''}>${icon('play')}<span>${fromPlayer ? (dom.audio.paused ? t('继续播放') : t('正在播放')) : t('播放')}</span></button>
+    <button data-track-menu-action="next">${icon('next')}<span>${escapeHtml(t('下一首播放'))}</span></button>
+    ${trackArtists.length === 1 ? `<button data-track-artist-id="${attr(trackArtists[0].id)}" data-track-artist-name="${attr(trackArtists[0].name)}">${icon('user')}<span>${escapeHtml(t('歌手：{name}', { name: trackArtists[0].name }))}</span></button>` : ''}
+    ${trackArtists.length > 1 ? `<button data-track-menu-action="choose-artist">${icon('user')}<span>${escapeHtml(t('歌手'))}</span><small>›</small></button>
       <div class="track-menu-playlists" data-menu-artists hidden>${trackArtists.map((artist) => `<button data-track-artist-id="${attr(artist.id)}" data-track-artist-name="${attr(artist.name)}"><span>${escapeHtml(artist.name)}</span></button>`).join('')}</div>` : ''}
-    ${trackAlbum ? `<button data-track-album-id="${attr(trackAlbum.id)}" data-track-album-name="${attr(trackAlbum.name)}">${icon('album')}<span>专辑：${escapeHtml(trackAlbum.name)}</span></button>` : ''}
-    ${playlistChoices.length ? `<button data-track-menu-action="choose-playlist">${icon('list')}<span>添加到歌单</span><small>›</small></button>
+    ${trackAlbum ? `<button data-track-album-id="${attr(trackAlbum.id)}" data-track-album-name="${attr(trackAlbum.name)}">${icon('album')}<span>${escapeHtml(t('专辑：{name}', { name: trackAlbum.name }))}</span></button>` : ''}
+    ${playlistChoices.length ? `<button data-track-menu-action="choose-playlist">${icon('list')}<span>${escapeHtml(t('添加到歌单'))}</span><small>›</small></button>
       <div class="track-menu-playlists" data-menu-playlists hidden>${playlistChoices.map((playlist) => `<button data-add-playlist-id="${attr(playlist.id)}"><span>${escapeHtml(playlist.name)}</span></button>`).join('')}</div>` : ''}
-    ${canRemove ? `<div class="track-menu-separator"></div><button class="danger" data-track-menu-action="remove" data-current-playlist-id="${attr(playlistId)}"><span>从歌单中移除</span></button>` : ''}`
+    ${canRemove ? `<div class="track-menu-separator"></div><button class="danger" data-track-menu-action="remove" data-current-playlist-id="${attr(playlistId)}"><span>${escapeHtml(t('从歌单中移除'))}</span></button>` : ''}`
   dom.trackMenu.classList.add('open')
   dom.trackMenu.setAttribute('aria-hidden', 'false')
   positionTrackMenu(anchor, point)
@@ -4502,9 +4531,9 @@ function showPlaylistMenu(anchor, playlist, point = null) {
   state.menuTrack = null
   state.menuPlaylist = playlist
   dom.trackMenu.innerHTML = `<div class="track-menu-title">${escapeHtml(playlist.name)}</div>
-    ${owned ? `<button data-playlist-menu-action="edit">${icon('edit')}<span>编辑歌单信息</span></button>
-      <div class="track-menu-separator"></div><button class="danger" data-playlist-menu-action="delete">${icon('trash')}<span>删除歌单</span></button>`
-      : `<button class="danger" data-playlist-menu-action="unsubscribe">${icon('heart')}<span>取消收藏</span></button>`}`
+    ${owned ? `<button data-playlist-menu-action="edit">${icon('edit')}<span>${escapeHtml(t('编辑歌单信息'))}</span></button>
+      <div class="track-menu-separator"></div><button class="danger" data-playlist-menu-action="delete">${icon('trash')}<span>${escapeHtml(t('删除歌单'))}</span></button>`
+      : `<button class="danger" data-playlist-menu-action="unsubscribe">${icon('heart')}<span>${escapeHtml(t('取消收藏'))}</span></button>`}`
   dom.trackMenu.classList.add('open')
   dom.trackMenu.setAttribute('aria-hidden', 'false')
   positionTrackMenu(anchor, point)
@@ -4526,7 +4555,7 @@ function queueTrackNext(track) {
   state.queue.splice(Math.min(anchor + 1, state.queue.length), 0, track)
   state.queueIndex = anchor
   renderQueue()
-  toast(`接下来播放：${track.name}`)
+  toast(t('接下来播放：{name}', { name: track.name }))
 }
 
 function setTrackLiked(trackId, liked) {
@@ -4550,12 +4579,12 @@ function playlistAlreadyContainsTrack(playlistId, trackId) {
 async function modifyPlaylist(op, playlistId, track, options = {}) {
   if (!state.loggedIn || !playlistId || !track) return false
   if (op === 'add' && playlistAlreadyContainsTrack(playlistId, track.id)) {
-    toast('歌单中已有这首歌')
+    toast(t('歌单中已有这首歌'))
     return false
   }
   try {
     const body = unwrap(await bridge.data.playlistTrack(op, playlistId, track.id))
-    if (body?.code && Number(body.code) !== 200) throw new Error(body.message || '歌单操作失败')
+    if (body?.code && Number(body.code) !== 200) throw new Error(body.message || t('歌单操作失败'))
     const likedPlaylist = likedPlaylistOf()
     if (likedPlaylist && String(likedPlaylist.id) === String(playlistId)) setTrackLiked(track.id, op === 'add')
     if (state.route === 'playlist' && String(state.routePayload?.id || state.routePayload) === String(playlistId)) {
@@ -4563,14 +4592,14 @@ async function modifyPlaylist(op, playlistId, track, options = {}) {
       else if (!state.playlistTracks.some((item) => String(item.id) === String(track.id))) state.playlistTracks.push(track)
       refreshCurrentPlaylistTrackList()
     }
-    if (!options.quiet) toast(op === 'add' ? `已添加到歌单：${track.name}` : `已从歌单移除：${track.name}`)
+    if (!options.quiet) toast(op === 'add' ? t('已添加到歌单：{name}', { name: track.name }) : t('已从歌单移除：{name}', { name: track.name }))
     return true
   } catch (error) {
     if (op === 'add' && /已存在|重复|already|exist/i.test(String(error?.message || ''))) {
-      toast('歌单中已有这首歌')
+      toast(t('歌单中已有这首歌'))
       return false
     }
-    if (!options.quiet) toast(error.message || '歌单操作失败', '操作失败', 'error')
+    if (!options.quiet) toast(error.message || t('歌单操作失败'), t('操作失败'), 'error')
     else throw error
     return false
   }
@@ -4600,7 +4629,7 @@ function updatePlaylistSubscriptionButtons(id, subscribed, pending = false) {
     button.disabled = pending
     button.dataset.playlistSubscribed = String(subscribed)
     button.classList.toggle('active', subscribed)
-    button.innerHTML = `${icon('heart')} ${pending ? '正在同步…' : subscribed ? '已收藏' : '收藏歌单'}`
+    button.innerHTML = `${icon('heart')} ${pending ? t('正在同步…') : subscribed ? t('已收藏') : t('收藏歌单')}`
   })
 }
 
@@ -4617,11 +4646,11 @@ async function changePlaylistSubscription(playlist, subscribed) {
   updatePlaylistSubscriptionButtons(id, previous, true)
   try {
     const body = unwrap(await bridge.data.playlistSubscribe(id, subscribed))
-    if (body?.code && Number(body.code) !== 200) throw new Error(body.message || '歌单收藏失败')
+    if (body?.code && Number(body.code) !== 200) throw new Error(body.message || t('歌单收藏失败'))
     applyPlaylistSubscriptionLocally(playlist, subscribed)
     updatePlaylistSubscriptionButtons(id, subscribed, true)
     state.playlistSubscriptionCooldown.set(id, Date.now() + 2200)
-    toast(subscribed ? '已收藏歌单' : '已取消收藏歌单')
+    toast(subscribed ? t('已收藏歌单') : t('已取消收藏歌单'))
     window.setTimeout(async () => {
       if (Date.now() < Number(state.playlistSubscriptionCooldown.get(id) || 0)) return
       state.playlistSubscriptionCooldown.delete(id)
@@ -4631,7 +4660,7 @@ async function changePlaylistSubscription(playlist, subscribed) {
     return true
   } catch (error) {
     updatePlaylistSubscriptionButtons(id, previous, false)
-    toast(error.message || '歌单收藏失败', '操作失败', 'error')
+    toast(error.message || t('歌单收藏失败'), t('操作失败'), 'error')
     return false
   } finally {
     state.playlistSubscriptionPending.delete(id)
@@ -4776,8 +4805,8 @@ async function setImmersiveFullScreen(value) {
   dom.immersive.classList.toggle('fullscreen', state.fullScreen)
   const button = $('#immersiveFullScreen')
   button.classList.toggle('active', state.fullScreen)
-  button.setAttribute('aria-label', state.fullScreen ? '退出全屏' : '全屏')
-  button.title = state.fullScreen ? '退出全屏' : '全屏'
+  button.setAttribute('aria-label', state.fullScreen ? t('退出全屏') : t('全屏'))
+  button.title = state.fullScreen ? t('退出全屏') : t('全屏')
   updateMaximizeButton($('#immersiveMaximize'), state.maximized, state.fullScreen)
   return state.fullScreen
 }
@@ -4974,11 +5003,11 @@ function toggleQueue(open = !dom.queueDrawer.classList.contains('open'), options
 }
 
 function updateProfileUi() {
-  $('#profileName').textContent = state.loggedIn ? state.profile?.nickname || '网易云用户' : '登录网易云音乐'
-  $('#profileHint').textContent = state.loggedIn ? '' : '登录'
+  $('#profileName').textContent = state.loggedIn ? state.profile?.nickname || t('网易云用户') : t('登录网易云音乐')
+  $('#profileHint').textContent = state.loggedIn ? '' : t('登录')
   const avatar = $('#profileAvatar')
   if (state.loggedIn && state.profile?.avatarUrl) {
-    const label = state.profile?.nickname || '网易云用户'
+    const label = state.profile?.nickname || t('网易云用户')
     avatar.innerHTML = `<img src="${attr(String(state.profile.avatarUrl).replace(/^http:/, 'https:'))}" alt="${attr(label)}">`
   } else {
     avatar.innerHTML = icon('user')
@@ -4986,7 +5015,7 @@ function updateProfileUi() {
   const profileButton = $('#profileButton')
   profileButton.classList.add('interactive')
   profileButton.setAttribute('aria-disabled', 'false')
-  profileButton.title = state.loggedIn ? '打开我的主页' : '登录网易云音乐'
+  profileButton.title = state.loggedIn ? t('打开我的主页') : t('登录网易云音乐')
 }
 
 async function loadAccount() {
@@ -5019,7 +5048,7 @@ async function loadAccount() {
 async function loadLikedSongs(uid) {
   try {
     const body = unwrap(await bridge.data.likeList(uid))
-    if (body?.code && Number(body.code) !== 200) throw new Error(body.message || '收藏列表同步失败')
+    if (body?.code && Number(body.code) !== 200) throw new Error(body.message || t('收藏列表同步失败'))
     state.liked = new Set((body.ids || []).map(String))
     updateLikeButtonsOnly()
     return true
@@ -5031,7 +5060,7 @@ async function loadLikedSongs(uid) {
 async function loadUserPlaylists(uid) {
   try {
     const body = unwrap(await bridge.data.userPlaylists(uid))
-    if (body?.code && Number(body.code) !== 200) throw new Error(body.message || '歌单同步失败')
+    if (body?.code && Number(body.code) !== 200) throw new Error(body.message || t('歌单同步失败'))
     state.userPlaylists = (body.playlist || []).map(normalizePlaylist)
     renderPlaylistNav(state.userPlaylists)
     return true
@@ -5043,7 +5072,7 @@ async function loadUserPlaylists(uid) {
 
 function renderPlaylistNav(playlists) {
   if (!state.loggedIn) {
-    dom.playlistNav.innerHTML = '<div class="nav-heading-row"><p class="nav-heading">我的歌单</p></div><button class="nav-item" data-login><svg><use href="#i-list"></use></svg><span>登录后同步歌单</span></button>'
+    dom.playlistNav.innerHTML = `<div class="nav-heading-row"><p class="nav-heading">${escapeHtml(t('我的歌单'))}</p></div><button class="nav-item" data-login><svg><use href="#i-list"></use></svg><span>${escapeHtml(t('登录后同步歌单'))}</span></button>`
     return
   }
   const uid = String(state.profile?.userId || '')
@@ -5052,15 +5081,15 @@ function renderPlaylistNav(playlists) {
   const own = created.filter((playlist) => playlist !== likedPlaylist)
   const collected = playlists.filter((playlist) => playlist.creatorId !== uid)
   const items = (entries, emptyText) => entries.length
-    ? entries.map((playlist) => `<div class="playlist-nav-item"><button class="nav-item" data-playlist-id="${attr(playlist.id)}" data-playlist-owned="${playlist.creatorId === uid}" title="${attr(playlist.name)}">${icon('list')}<span>${escapeHtml(playlist.name)}</span></button><button type="button" class="playlist-nav-more" data-playlist-menu-id="${attr(playlist.id)}" aria-label="管理 ${attr(playlist.name)}" title="更多">${icon('more')}</button></div>`).join('')
+    ? entries.map((playlist) => `<div class="playlist-nav-item"><button class="nav-item" data-playlist-id="${attr(playlist.id)}" data-playlist-owned="${playlist.creatorId === uid}" title="${attr(playlist.name)}">${icon('list')}<span>${escapeHtml(playlist.name)}</span></button><button type="button" class="playlist-nav-more" data-playlist-menu-id="${attr(playlist.id)}" aria-label="${attr(t('管理 {name}', { name: playlist.name }))}" title="${attr(t('更多'))}">${icon('more')}</button></div>`).join('')
     : `<div class="playlist-nav-empty">${escapeHtml(emptyText)}</div>`
-  dom.playlistNav.innerHTML = `<section class="playlist-nav-section" aria-label="创建的歌单">
-      <div class="nav-heading-row"><p class="nav-heading">创建的歌单 ${own.length}</p><button type="button" class="tiny-button" data-create-playlist aria-label="创建歌单" title="创建歌单">${icon('plus')}</button></div>
-      ${items(own, '还没有创建歌单')}
+  dom.playlistNav.innerHTML = `<section class="playlist-nav-section" aria-label="${attr(t('创建的歌单'))}">
+      <div class="nav-heading-row"><p class="nav-heading">${escapeHtml(t('创建的歌单'))} ${own.length}</p><button type="button" class="tiny-button" data-create-playlist aria-label="${attr(t('创建歌单'))}" title="${attr(t('创建歌单'))}">${icon('plus')}</button></div>
+      ${items(own, t('还没有创建歌单'))}
     </section>
-    <section class="playlist-nav-section" aria-label="收藏的歌单">
-      <div class="nav-heading-row"><p class="nav-heading">收藏的歌单 ${collected.length}</p></div>
-      ${items(collected, '还没有收藏歌单')}
+    <section class="playlist-nav-section" aria-label="${attr(t('收藏的歌单'))}">
+      <div class="nav-heading-row"><p class="nav-heading">${escapeHtml(t('收藏的歌单'))} ${collected.length}</p></div>
+      ${items(collected, t('还没有收藏歌单'))}
     </section>`
 }
 
@@ -5083,10 +5112,10 @@ function showUpdateModal(release, { automatic = false } = {}) {
   try { localStorage.setItem(updateNotificationStorageKey, release.tag) } catch {}
   const releaseBody = String(release.body || '').trim()
   dom.modalLayer.innerHTML = `<div class="modal update-modal" role="dialog" aria-modal="true" aria-labelledby="updateModalTitle">
-    <div class="modal-header"><div><h2 id="updateModalTitle">发现新版本</h2><p class="update-version">MenoRadio ${escapeHtml(release.tag)}</p></div><button type="button" class="icon-button" data-close-modal aria-label="关闭">${icon('close')}</button></div>
+    <div class="modal-header"><div><h2 id="updateModalTitle">${escapeHtml(t('发现新版本'))}</h2><p class="update-version">MenoRadio ${escapeHtml(release.tag)}</p></div><button type="button" class="icon-button" data-close-modal aria-label="${attr(t('关闭'))}">${icon('close')}</button></div>
     ${releaseBody ? `<article class="release-markdown markdown-document">${renderSafeMarkdown(releaseBody)}</article>` : ''}
-    <p class="update-once-note">此更新提醒仅显示一次，不会再次弹窗。</p>
-    <div class="modal-actions"><button type="button" class="primary-button" data-update-release>前往github获取新版本</button><button type="button" class="secondary-button" data-close-modal>关闭</button></div>
+    <p class="update-once-note">${escapeHtml(t('此更新提醒仅显示一次，不会再次弹窗。'))}</p>
+    <div class="modal-actions"><button type="button" class="primary-button" data-update-release>${escapeHtml(t('前往github获取新版本'))}</button><button type="button" class="secondary-button" data-close-modal>${escapeHtml(t('关闭'))}</button></div>
   </div>`
   dom.modalLayer.classList.add('open')
   dom.modalLayer.setAttribute('aria-hidden', 'false')
@@ -5113,7 +5142,7 @@ async function checkForUpdates({ automatic = false, button = null } = {}) {
   const original = button?.innerHTML || ''
   if (button) {
     button.disabled = true
-    button.textContent = '检查中…'
+    button.textContent = t('检查中…')
   }
   try {
     if (!updateCheckPromise) {
@@ -5121,7 +5150,7 @@ async function checkForUpdates({ automatic = false, button = null } = {}) {
     }
     const release = await updateCheckPromise
     if (!release?.updateAvailable) {
-      if (!automatic) toast('已是最新版本')
+      if (!automatic) toast(t('已是最新版本'))
       return
     }
     let notifiedTag = ''
@@ -5129,7 +5158,7 @@ async function checkForUpdates({ automatic = false, button = null } = {}) {
     if (automatic && notifiedTag === release.tag) return
     showUpdateModal(release, { automatic })
   } catch {
-    if (!automatic) toast('检查更新失败')
+    if (!automatic) toast(t('检查更新失败'))
   } finally {
     if (button?.isConnected) {
       button.disabled = false
@@ -5141,10 +5170,10 @@ async function checkForUpdates({ automatic = false, button = null } = {}) {
 function showCreatePlaylist() {
   if (!state.loggedIn) return showLogin()
   dom.modalLayer.innerHTML = `<div class="modal create-playlist-modal" role="dialog" aria-modal="true" aria-labelledby="createPlaylistTitle">
-    <div class="modal-header"><h2 id="createPlaylistTitle">创建歌单</h2><button class="icon-button" data-close-modal>${icon('close')}</button></div>
+    <div class="modal-header"><h2 id="createPlaylistTitle">${escapeHtml(t('创建歌单'))}</h2><button class="icon-button" data-close-modal>${icon('close')}</button></div>
     <form class="login-form" data-create-playlist-form>
-      <label class="login-field"><span>歌单名称</span><input name="name" type="text" maxlength="40" autocomplete="off" required></label>
-      <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>取消</button><button class="primary-button" type="submit">创建</button></div>
+      <label class="login-field"><span>${escapeHtml(t('歌单名称'))}</span><input name="name" type="text" maxlength="40" autocomplete="off" required></label>
+      <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>${escapeHtml(t('取消'))}</button><button class="primary-button" type="submit">${escapeHtml(t('创建'))}</button></div>
     </form>
   </div>`
   dom.modalLayer.classList.add('open')
@@ -5159,19 +5188,19 @@ function showCreatePlaylist() {
     if (!name) return input?.focus()
     const button = $('button[type="submit"]', form)
     button.disabled = true
-    button.textContent = '正在创建…'
+    button.textContent = t('正在创建…')
     try {
       const body = unwrap(await bridge.data.playlistCreate(name))
-      if (body?.code && Number(body.code) !== 200) throw new Error(body.message || '歌单创建失败')
+      if (body?.code && Number(body.code) !== 200) throw new Error(body.message || t('歌单创建失败'))
       closeModal()
       await loadUserPlaylists(state.profile?.userId)
-      toast(`已创建歌单“${name}”`)
+      toast(t('已创建歌单“{name}”', { name: name }))
       const id = body?.id || body?.playlist?.id
       if (id) navigate('playlist', { id: String(id) })
     } catch (error) {
       button.disabled = false
-      button.textContent = '创建'
-      toast(error.message || '歌单创建失败', '操作失败', 'error')
+      button.textContent = t('创建')
+      toast(error.message || t('歌单创建失败'), t('操作失败'), 'error')
     }
   })
 }
@@ -5179,11 +5208,11 @@ function showCreatePlaylist() {
 function showEditPlaylist(playlist) {
   if (!playlist || playlist.creatorId !== String(state.profile?.userId || '') || isLikedPlaylist(playlist)) return
   dom.modalLayer.innerHTML = `<div class="modal create-playlist-modal" role="dialog" aria-modal="true" aria-labelledby="editPlaylistTitle">
-    <div class="modal-header"><div><h2 id="editPlaylistTitle">编辑歌单信息</h2><p>${escapeHtml(playlist.name)}</p></div><button class="icon-button" data-close-modal>${icon('close')}</button></div>
+    <div class="modal-header"><div><h2 id="editPlaylistTitle">${escapeHtml(t('编辑歌单信息'))}</h2><p>${escapeHtml(playlist.name)}</p></div><button class="icon-button" data-close-modal>${icon('close')}</button></div>
     <form class="login-form" data-edit-playlist-form>
-      <label class="login-field"><span>名称</span><input name="name" type="text" maxlength="40" value="${attr(playlist.name)}" autocomplete="off" required></label>
-      <label class="login-field"><span>简介</span><textarea class="playlist-description-input" name="description" maxlength="1000" placeholder="介绍一下这个歌单">${escapeHtml(playlist.description)}</textarea></label>
-      <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>取消</button><button class="primary-button" type="submit">保存</button></div>
+      <label class="login-field"><span>${escapeHtml(t('名称'))}</span><input name="name" type="text" maxlength="40" value="${attr(playlist.name)}" autocomplete="off" required></label>
+      <label class="login-field"><span>${escapeHtml(t('简介'))}</span><textarea class="playlist-description-input" name="description" maxlength="1000" placeholder="${attr(t('介绍一下这个歌单'))}">${escapeHtml(playlist.description)}</textarea></label>
+      <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>${escapeHtml(t('取消'))}</button><button class="primary-button" type="submit">${escapeHtml(t('保存'))}</button></div>
     </form>
   </div>`
   dom.modalLayer.classList.add('open')
@@ -5200,20 +5229,20 @@ function showEditPlaylist(playlist) {
     if (!name) return nameInput?.focus()
     const button = $('button[type="submit"]', form)
     button.disabled = true
-    button.textContent = '正在保存…'
+    button.textContent = t('正在保存…')
     try {
       const body = unwrap(await bridge.data.playlistUpdate(playlist.id, name, description, playlist.tags))
-      if (body?.code && Number(body.code) !== 200) throw new Error(body.message || '歌单信息保存失败')
+      if (body?.code && Number(body.code) !== 200) throw new Error(body.message || t('歌单信息保存失败'))
       closeModal()
       await loadUserPlaylists(state.profile?.userId)
-      toast('歌单信息已保存')
+      toast(t('歌单信息已保存'))
       if (state.route === 'playlist' && String(state.routePayload?.id || state.routePayload) === String(playlist.id)) {
         await renderPlaylist(state.routePayload)
       }
     } catch (error) {
       button.disabled = false
-      button.textContent = '保存'
-      toast(error.message || '歌单信息保存失败', '操作失败', 'error')
+      button.textContent = t('保存')
+      toast(error.message || t('歌单信息保存失败'), t('操作失败'), 'error')
     }
   })
 }
@@ -5221,8 +5250,8 @@ function showEditPlaylist(playlist) {
 function showDeletePlaylist(playlist) {
   if (!playlist || playlist.creatorId !== String(state.profile?.userId || '') || isLikedPlaylist(playlist)) return
   dom.modalLayer.innerHTML = `<div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="deletePlaylistTitle">
-    <div class="modal-header"><div><h2 id="deletePlaylistTitle">删除歌单？</h2><p>“${escapeHtml(playlist.name)}”将从网易云音乐中删除，此操作无法撤销。</p></div><button class="icon-button" data-close-modal>${icon('close')}</button></div>
-    <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>取消</button><button class="danger-button" type="button" data-confirm-delete-playlist>删除</button></div>
+    <div class="modal-header"><div><h2 id="deletePlaylistTitle">${escapeHtml(t('删除歌单？'))}</h2><p>${escapeHtml(t('“{name}”将从网易云音乐中删除，此操作无法撤销。', { name: playlist.name }))}</p></div><button class="icon-button" data-close-modal>${icon('close')}</button></div>
+    <div class="modal-actions"><button class="secondary-button" type="button" data-close-modal>${escapeHtml(t('取消'))}</button><button class="danger-button" type="button" data-confirm-delete-playlist>${escapeHtml(t('删除'))}</button></div>
   </div>`
   dom.modalLayer.classList.add('open')
   dom.modalLayer.setAttribute('aria-hidden', 'false')
@@ -5230,19 +5259,19 @@ function showDeletePlaylist(playlist) {
   $('[data-confirm-delete-playlist]', dom.modalLayer).addEventListener('click', async (event) => {
     const button = event.currentTarget
     button.disabled = true
-    button.textContent = '正在删除…'
+    button.textContent = t('正在删除…')
     try {
       const body = unwrap(await bridge.data.playlistDelete(playlist.id))
-      if (body?.code && Number(body.code) !== 200) throw new Error(body.message || '歌单删除失败')
+      if (body?.code && Number(body.code) !== 200) throw new Error(body.message || t('歌单删除失败'))
       const viewingDeleted = state.route === 'playlist' && String(state.routePayload?.id || state.routePayload) === String(playlist.id)
       closeModal()
       await loadUserPlaylists(state.profile?.userId)
-      toast(`已删除歌单“${playlist.name}”`)
+      toast(t('已删除歌单“{name}”', { name: playlist.name }))
       if (viewingDeleted) navigate('home')
     } catch (error) {
       button.disabled = false
-      button.textContent = '删除'
-      toast(error.message || '歌单删除失败', '操作失败', 'error')
+      button.textContent = t('删除')
+      toast(error.message || t('歌单删除失败'), t('操作失败'), 'error')
     }
   })
 }
@@ -5255,11 +5284,11 @@ async function unsubscribePlaylist(playlist) {
 function showLogin() {
   const generation = ++state.loginGeneration
   dom.modalLayer.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
-    <div class="modal-header"><h2 id="loginTitle">登录网易云音乐</h2><button class="icon-button" data-close-modal>${icon('close')}</button></div>
-    <div class="login-tabs"><button class="active" data-login-tab="qr">扫码</button><button data-login-tab="account">账号</button><button data-login-tab="cookie">Cookie</button></div>
-    <div class="login-panel" data-login-panel="qr"><div class="qr-wrap"><span class="qr-loading">正在获取二维码…</span></div><div class="qr-status"><strong>请稍候</strong><span>正在连接网易云音乐</span></div></div>
-    <div class="login-panel" data-login-panel="account" hidden><form class="login-form" data-password-form><label class="login-field"><span>手机号或邮箱</span><input name="account" type="text" autocomplete="username" spellcheck="false" required></label><label class="login-field"><span>密码</span><input name="password" type="password" autocomplete="current-password" required></label><p class="password-note">密码仅用于本次登录，不会保存。若遇到网易云验证，请改用扫码。</p><div class="modal-actions"><button class="primary-button" type="submit">登录</button></div></form></div>
-    <div class="login-panel" data-login-panel="cookie" hidden><p class="cookie-help">粘贴已登录网页的 Cookie，至少包含 <strong>MUSIC_U</strong>。</p><textarea class="cookie-input" placeholder="MUSIC_U=...; NMTID=..."></textarea><div class="modal-actions"><button class="secondary-button" data-cookie-help>获取方法 ${icon('external')}</button><button class="primary-button" data-import-cookie>登录</button></div></div>
+    <div class="modal-header"><h2 id="loginTitle">${escapeHtml(t('登录网易云音乐'))}</h2><button class="icon-button" data-close-modal>${icon('close')}</button></div>
+    <div class="login-tabs"><button class="active" data-login-tab="qr">${escapeHtml(t('扫码'))}</button><button data-login-tab="account">${escapeHtml(t('账号'))}</button><button data-login-tab="cookie">Cookie</button></div>
+    <div class="login-panel" data-login-panel="qr"><div class="qr-wrap"><span class="qr-loading">${escapeHtml(t('正在获取二维码…'))}</span></div><div class="qr-status"><strong>${escapeHtml(t('请稍候'))}</strong><span>${escapeHtml(t('正在连接网易云音乐'))}</span></div></div>
+    <div class="login-panel" data-login-panel="account" hidden><form class="login-form" data-password-form><label class="login-field"><span>${escapeHtml(t('手机号或邮箱'))}</span><input name="account" type="text" autocomplete="username" spellcheck="false" required></label><label class="login-field"><span>${escapeHtml(t('密码'))}</span><input name="password" type="password" autocomplete="current-password" required></label><p class="password-note">${escapeHtml(t('密码仅用于本次登录，不会保存。若遇到网易云验证，请改用扫码。'))}</p><div class="modal-actions"><button class="primary-button" type="submit">${escapeHtml(t('登录'))}</button></div></form></div>
+    <div class="login-panel" data-login-panel="cookie" hidden><p class="cookie-help">${escapeHtml(t('粘贴已登录网页的 Cookie，至少包含 {name}。', { name: 'MUSIC_U' }))}</p><textarea class="cookie-input" placeholder="MUSIC_U=...; NMTID=..."></textarea><div class="modal-actions"><button class="secondary-button" data-cookie-help>${escapeHtml(t('获取方法'))} ${icon('external')}</button><button class="primary-button" data-import-cookie>${escapeHtml(t('登录'))}</button></div></div>
   </div>`
   dom.modalLayer.classList.add('open')
   dom.modalLayer.setAttribute('aria-hidden', 'false')
@@ -5282,37 +5311,37 @@ function bindLoginModal(generation) {
     const button = $('button[type="submit"]', form)
     if (!account || !password) return
     button.disabled = true
-    button.textContent = '正在登录…'
+    button.textContent = t('正在登录…')
     try {
       const auth = unwrap(await bridge.auth.loginPassword(account, password))
       state.loggedIn = true
       state.profile = auth.profile
       closeModal()
       await afterLogin()
-      toast(`欢迎回来，${state.profile?.nickname || '网易云用户'}`, '登录成功')
+      toast(t('欢迎回来，{name}', { name: state.profile?.nickname || t('网易云用户') }), t('登录成功'))
     } catch (error) {
-      toast(error.message, '账号登录失败', 'error')
+      toast(error.message, t('账号登录失败'), 'error')
       button.disabled = false
-      button.textContent = '登录'
+      button.textContent = t('登录')
     }
   })
   $('[data-import-cookie]', dom.modalLayer).addEventListener('click', async (event) => {
     const button = event.currentTarget
     const value = $('.cookie-input', dom.modalLayer).value
-    if (!value.trim()) return toast('请先粘贴 Cookie', '', 'error')
+    if (!value.trim()) return toast(t('请先粘贴 Cookie'), '', 'error')
     button.disabled = true
-    button.textContent = '正在验证…'
+    button.textContent = t('正在验证…')
     try {
       const auth = unwrap(await bridge.auth.importCookie(value))
       state.loggedIn = true
       state.profile = auth.profile
       closeModal()
       await afterLogin()
-      toast(`欢迎回来，${state.profile?.nickname || '网易云用户'}`, '登录成功')
+      toast(t('欢迎回来，{name}', { name: state.profile?.nickname || t('网易云用户') }), t('登录成功'))
     } catch (error) {
-      toast(error.message, 'Cookie 登录失败', 'error')
+      toast(error.message, t('Cookie 登录失败'), 'error')
       button.disabled = false
-      button.textContent = '登录'
+      button.textContent = t('登录')
     }
   })
 }
@@ -5323,13 +5352,13 @@ async function beginQrLogin(generation) {
   try {
     const qr = unwrap(await bridge.auth.createQr())
     if (generation !== state.loginGeneration) return
-    wrap.innerHTML = `<img src="${attr(qr.dataUrl)}" alt="网易云音乐登录二维码">`
-    status.innerHTML = '<strong>打开网易云音乐 App 扫码</strong><span>在手机上确认登录</span>'
+    wrap.innerHTML = `<img src="${attr(qr.dataUrl)}" alt="${attr(t('网易云音乐登录二维码'))}">`
+    status.innerHTML = `<strong>${escapeHtml(t('打开网易云音乐 App 扫码'))}</strong><span>${escapeHtml(t('在手机上确认登录'))}</span>`
     pollQr(qr.key, generation)
   } catch (error) {
     if (generation !== state.loginGeneration) return
-    wrap.innerHTML = `<span class="qr-loading">二维码加载失败</span>`
-    status.innerHTML = `<strong>暂时无法扫码</strong><span>${escapeHtml(error.message)}</span>`
+    wrap.innerHTML = `<span class="qr-loading">${escapeHtml(t('二维码加载失败'))}</span>`
+    status.innerHTML = `<strong>${escapeHtml(t('暂时无法扫码'))}</strong><span>${escapeHtml(t(error.message))}</span>`
   }
 }
 
@@ -5341,20 +5370,25 @@ async function pollQr(key, generation) {
     const status = $('.qr-status', dom.modalLayer)
     if (!status) return
     if (result.code === 802) {
-      status.innerHTML = '<strong>已扫码</strong><span>请在手机上轻点“授权登录”</span>'
+      status.innerHTML = `<strong>${escapeHtml(t('已扫码'))}</strong><span>${escapeHtml(t('请在手机上轻点“授权登录”'))}</span>`
     } else if (result.code === 803 || result.loggedIn) {
-      status.innerHTML = '<strong>登录成功</strong><span>正在同步你的音乐</span>'
+      status.innerHTML = `<strong>${escapeHtml(t('登录成功'))}</strong><span>${escapeHtml(t('正在同步你的音乐'))}</span>`
       closeModal()
       await loadAccount()
       await afterLogin()
-      toast(`欢迎回来，${state.profile?.nickname || '网易云用户'}`, '登录成功')
+      toast(t('欢迎回来，{name}', { name: state.profile?.nickname || t('网易云用户') }), t('登录成功'))
       return
     } else if (result.code === 800) {
-      $('.qr-wrap', dom.modalLayer)?.classList.add('expired')
+      const qr = $('.qr-wrap', dom.modalLayer)
+      if (qr) {
+        qr.dataset.expiredTitle = t('二维码已过期')
+        qr.dataset.expiredAction = t('点击刷新')
+        qr.classList.add('expired')
+      }
       $('.qr-wrap', dom.modalLayer)?.addEventListener('click', () => {
         const nextGeneration = ++state.loginGeneration
         $('.qr-wrap', dom.modalLayer).classList.remove('expired')
-        $('.qr-wrap', dom.modalLayer).innerHTML = '<span class="qr-loading">正在刷新…</span>'
+        $('.qr-wrap', dom.modalLayer).innerHTML = `<span class="qr-loading">${escapeHtml(t('正在刷新…'))}</span>`
         beginQrLogin(nextGeneration)
       }, { once: true })
       return
@@ -5384,14 +5418,14 @@ async function logout() {
   state.dailyRecommendation = null
   updateProfileUi()
   renderPlaylistNav([])
-  toast('已从本机移除登录会话')
+  toast(t('已从本机移除登录会话'))
   navigate('home')
 }
 
 function updateMaximizeButton(button, maximized, fullScreen = false) {
   if (!button) return
   const iconName = fullScreen ? 'fullscreen-exit' : maximized ? 'restore' : 'window'
-  const label = fullScreen ? '退出全屏' : maximized ? '还原' : '最大化'
+  const label = fullScreen ? t('退出全屏') : maximized ? t('还原') : t('最大化')
   button.classList.toggle('restored', maximized && !fullScreen)
   button.classList.toggle('fullscreen-exit', fullScreen)
   button.innerHTML = icon(iconName)
@@ -5483,8 +5517,8 @@ function bindEvents() {
     const button = $('#immersiveMaximize')
     const fullScreenButton = $('#immersiveFullScreen')
     fullScreenButton.classList.toggle('active', state.fullScreen)
-    fullScreenButton.setAttribute('aria-label', state.fullScreen ? '退出全屏' : '全屏')
-    fullScreenButton.title = state.fullScreen ? '退出全屏' : '全屏'
+    fullScreenButton.setAttribute('aria-label', state.fullScreen ? t('退出全屏') : t('全屏'))
+    fullScreenButton.title = state.fullScreen ? t('退出全屏') : t('全屏')
     updateMaximizeButton(button, state.maximized, state.fullScreen)
   })
   bridge.window.onZoomChanged((factor) => {
@@ -5498,7 +5532,7 @@ function bindEvents() {
 
   $('#profileButton').addEventListener('click', () => {
     if (!state.loggedIn) return showLogin()
-    navigate('user', { uid: String(state.profile?.userId || ''), name: state.profile?.nickname || '网易云用户' })
+    navigate('user', { uid: String(state.profile?.userId || ''), name: state.profile?.nickname || t('网易云用户') })
   })
   $('#playButton').addEventListener('click', togglePlayback)
   $('#previousButton').addEventListener('click', () => nextTrack(-1))
@@ -5742,19 +5776,19 @@ function bindEvents() {
           state.playbackProxyFallbackGeneration = generation
           freshToken = true
         } else {
-          handlePlaybackFailure(state.current, generation, playbackError('音频连接中断', 'network', { mediaErrorCode }))
+          handlePlaybackFailure(state.current, generation, playbackError(t('音频连接中断'), 'network', { mediaErrorCode }))
           return
         }
         void recoverOptimizedPlayback(generation, { freshToken, target: retryTarget, shouldResume })
           .then((recovered) => {
             if (!recovered && generation === state.audioLoadGeneration) {
-              handlePlaybackFailure(state.current, generation, playbackError('音频连接恢复失败', 'network', { mediaErrorCode }))
+              handlePlaybackFailure(state.current, generation, playbackError(t('音频连接恢复失败'), 'network', { mediaErrorCode }))
             }
           })
         return
       }
       const kind = mediaErrorCode === 4 ? 'unavailable' : 'network'
-      const error = playbackError(`音频连接中断（错误代码 ${mediaErrorCode || '未知'}）`, kind, { mediaErrorCode })
+      const error = playbackError(t('音频连接中断（错误代码 {code}）', { code: mediaErrorCode || t('未知') }), kind, { mediaErrorCode })
       handlePlaybackFailure(state.current, state.audioLoadGeneration, error)
     }
   })
@@ -5797,15 +5831,15 @@ function bindEvents() {
       if (!target || target.insertionIndex === target.fromIndex) {
         setDragInsertionMarker(null)
         event.dataTransfer.dropEffect = 'none'
-        setTrackDragFeedback('forbidden', '位置未改变')
+        setTrackDragFeedback('forbidden', t('位置未改变'))
         return
       }
       event.dataTransfer.dropEffect = 'move'
-      setTrackDragFeedback('move', '调整歌单顺序')
+      setTrackDragFeedback('move', t('调整歌单顺序'))
       setDragInsertionMarker(row, after ? 'after' : 'before')
     } else {
       event.dataTransfer.dropEffect = 'copy'
-      setTrackDragFeedback('copy', '加入当前歌单')
+      setTrackDragFeedback('copy', t('加入当前歌单'))
       setDragInsertionMarker(row, row ? (after ? 'after' : 'before') : '')
     }
   })
@@ -5876,13 +5910,6 @@ function bindEvents() {
         clearCoverPreloads()
         clearAudioPreloads()
       }
-      return
-    }
-    if (event.target.matches('[data-legacy-player]')) {
-      state.legacyPlayer = event.target.checked
-      localStorage.setItem('menoradio.legacyPlayer', String(state.legacyPlayer))
-      $$('[data-modern-player-setting]', dom.page).forEach((card) => { card.hidden = state.legacyPlayer })
-      refreshPlayerStyle({ lyrics: true, backdrop: true })
       return
     }
     if (event.target.matches('[data-word-highlight]')) {
@@ -6032,11 +6059,11 @@ function bindEvents() {
     if (state.dragSource === 'queue' && queueReorderTarget(state.queueDragIndex, state.queueDropIndex) === state.queueDragIndex) {
       setDragInsertionMarker(null)
       event.dataTransfer.dropEffect = 'none'
-      setTrackDragFeedback('forbidden', '位置未改变')
+      setTrackDragFeedback('forbidden', t('位置未改变'))
       return
     }
     event.dataTransfer.dropEffect = state.dragSource === 'queue' ? 'move' : 'copy'
-    setTrackDragFeedback(state.dragSource === 'queue' ? 'move' : 'copy', state.dragSource === 'queue' ? '调整播放顺序' : '加入播放队列')
+    setTrackDragFeedback(state.dragSource === 'queue' ? 'move' : 'copy', state.dragSource === 'queue' ? t('调整播放顺序') : t('加入播放队列'))
     setDragInsertionMarker(item, item ? (after ? 'after' : 'before') : '')
   })
   dom.queueList.addEventListener('drop', (event) => {
@@ -6085,11 +6112,11 @@ function bindEvents() {
     if (state.dragSource === 'queue' && queueReorderTarget(state.queueDragIndex, state.queueDropIndex) === state.queueDragIndex) {
       setDragInsertionMarker(null)
       event.dataTransfer.dropEffect = 'none'
-      setTrackDragFeedback('forbidden', '位置未改变')
+      setTrackDragFeedback('forbidden', t('位置未改变'))
       return
     }
     event.dataTransfer.dropEffect = state.dragSource === 'queue' ? 'move' : 'copy'
-    setTrackDragFeedback(state.dragSource === 'queue' ? 'move' : 'copy', state.dragSource === 'queue' ? '调整播放顺序' : '加入播放队列')
+    setTrackDragFeedback(state.dragSource === 'queue' ? 'move' : 'copy', state.dragSource === 'queue' ? t('调整播放顺序') : t('加入播放队列'))
     setDragInsertionMarker(item, item ? (after ? 'after' : 'before') : '')
   })
   dom.immersiveQueueList.addEventListener('drop', (event) => {
@@ -6120,14 +6147,14 @@ function bindEvents() {
     const track = state.menuTrack
     const artistLink = event.target.closest('[data-track-artist-id]')
     if (artistLink && track) {
-      const payload = { id: artistLink.dataset.trackArtistId, name: artistLink.dataset.trackArtistName || '歌手' }
+      const payload = { id: artistLink.dataset.trackArtistId, name: artistLink.dataset.trackArtistName || t('歌手') }
       hideTrackMenu()
       navigate('artist', payload)
       return
     }
     const albumLink = event.target.closest('[data-track-album-id]')
     if (albumLink && track) {
-      const payload = { id: albumLink.dataset.trackAlbumId, name: albumLink.dataset.trackAlbumName || '专辑' }
+      const payload = { id: albumLink.dataset.trackAlbumId, name: albumLink.dataset.trackAlbumName || t('专辑') }
       hideTrackMenu()
       navigate('album', payload)
       return
@@ -6145,9 +6172,9 @@ function bindEvents() {
       hideTrackMenu()
       try {
         await bridge.clipboard.writeText(info)
-        toast(`已复制歌曲信息 “${info}”`)
+        toast(t('已复制歌曲信息 “{info}”', { info }))
       } catch {
-        toast('无法写入剪贴板', '复制失败', 'error')
+        toast(t('无法写入剪贴板'), t('复制失败'), 'error')
       }
     } else if (action.dataset.trackMenuAction === 'resume') {
       hideTrackMenu()
@@ -6343,7 +6370,7 @@ function bindEvents() {
     if (playlist && playlist.creatorId === String(state.profile?.userId || '')) {
       event.preventDefault()
       event.dataTransfer.dropEffect = 'copy'
-      setTrackDragFeedback('copy', '加入歌单')
+      setTrackDragFeedback('copy', t('加入歌单'))
       setDragPlaylistTarget(event.target.closest('[data-playlist-id], [data-playlist-drop-liked]'))
       updatePlaylistHoverNavigation(playlist, event)
     } else {
@@ -6351,14 +6378,14 @@ function bindEvents() {
       clearPlaylistHoverNavigation()
     }
     if (state.dragSource === 'queue' || dom.immersive.classList.contains('open')) {
-      if (!event.defaultPrevented) setTrackDragFeedback('forbidden', '不能放在这里')
+      if (!event.defaultPrevented) setTrackDragFeedback('forbidden', t('不能放在这里'))
       return
     }
     const nearRightEdge = isNearQueueEdge(event)
     if (nearRightEdge) {
       event.preventDefault()
       event.dataTransfer.dropEffect = 'copy'
-      setTrackDragFeedback('copy', '加入播放队列')
+      setTrackDragFeedback('copy', t('加入播放队列'))
       state.dragLastNearQueueAt = performance.now()
       if (!dom.queueDrawer.classList.contains('open')) {
         state.queueAutoOpenedForDrag = true
@@ -6367,7 +6394,7 @@ function bindEvents() {
       return
     }
     if (!state.queueAutoOpenedForDrag) {
-      if (!event.defaultPrevented) setTrackDragFeedback('forbidden', '不能放在这里')
+      if (!event.defaultPrevented) setTrackDragFeedback('forbidden', t('不能放在这里'))
       return
     }
     const drawerRect = dom.queueDrawer.getBoundingClientRect()
@@ -6377,7 +6404,7 @@ function bindEvents() {
       toggleQueue(false, { source: 'drag', focusCurrent: false })
       state.queueAutoOpenedForDrag = false
     }, 160)
-    if (!event.defaultPrevented) setTrackDragFeedback('forbidden', '不能放在这里')
+    if (!event.defaultPrevented) setTrackDragFeedback('forbidden', t('不能放在这里'))
   })
   document.addEventListener('drop', (event) => {
     if (!state.draggedTrack || state.dragCancelled || state.dragDropHandled) return
@@ -6483,7 +6510,7 @@ function onPageClick(event) {
     const next = !expanded
     root?.classList.toggle('is-collapsed', !next)
     descriptionToggle.setAttribute('aria-expanded', String(next))
-    descriptionToggle.textContent = next ? '收起' : '展开'
+    descriptionToggle.textContent = next ? t('收起') : t('展开')
     if (!next && root) requestAnimationFrame(() => refreshExpandableDescription(root))
     return
   }
@@ -6502,7 +6529,7 @@ function onPageClick(event) {
   if (clearRecent) {
     state.recent = []
     renderRoute()
-    toast('已清空最近播放')
+    toast(t('已清空最近播放'))
     return
   }
   const searchType = event.target.closest('[data-search-type]')
@@ -6513,11 +6540,11 @@ function onPageClick(event) {
   const searchRefine = event.target.closest('[data-search-refine]')
   if (searchRefine) return navigate('search', { keywords: searchRefine.dataset.searchRefine, type: 1 })
   const artist = event.target.closest('[data-artist-id]')
-  if (artist) return navigate('artist', { id: artist.dataset.artistId, name: artist.dataset.artistName || '歌手' })
+  if (artist) return navigate('artist', { id: artist.dataset.artistId, name: artist.dataset.artistName || t('歌手') })
   const album = event.target.closest('[data-album-id]')
-  if (album) return navigate('album', { id: album.dataset.albumId, name: album.dataset.albumName || '专辑' })
+  if (album) return navigate('album', { id: album.dataset.albumId, name: album.dataset.albumName || t('专辑') })
   const user = event.target.closest('[data-user-id]')
-  if (user) return navigate('user', { uid: user.dataset.userId, name: user.dataset.userName || '网易云用户' })
+  if (user) return navigate('user', { uid: user.dataset.userId, name: user.dataset.userName || t('网易云用户') })
   const connections = event.target.closest('[data-user-connections]')
   if (connections) return navigate('user-connections', {
     uid: connections.dataset.profileId,
@@ -6682,6 +6709,23 @@ function onPageClick(event) {
     const control = choiceOption.closest('[data-choice-control]')
     const name = control?.dataset.choiceControl
     const value = choiceOption.dataset.choiceValue
+    if (name === 'language' && i18n.languages.some(([code]) => code === value)) {
+      if (value === i18n.locale) updateChoicePicker(control, value)
+      else changeLanguage(value)
+      return
+    }
+    if (name === 'player-style' && playerStyles.some(([style]) => style === value)) {
+      const legacy = value === 'legacy'
+      if (state.legacyPlayer !== legacy) {
+        state.legacyPlayer = legacy
+        localStorage.setItem('menoradio.legacyPlayer', String(legacy))
+        $$('[data-modern-player-setting]', dom.page).forEach((card) => { card.hidden = legacy })
+        refreshPlayerStyle({ lyrics: true, backdrop: true })
+        applyImmersiveLayout(true)
+      }
+      updateChoicePicker(control, value)
+      return
+    }
     if (name === 'audio-quality' && audioQualities.some(([optionValue]) => optionValue === value)) {
       if (state.audioQuality !== value) clearAudioPreloads()
       state.audioQuality = value
@@ -6756,6 +6800,9 @@ async function init() {
   try {
     const snapshot = await bridge.floatingLyrics.state()
     state.floatingLyrics = { ...state.floatingLyrics, ...(snapshot?.config || {}) }
+    if (snapshot?.config?.language !== i18n.locale && bridge.floatingLyrics.configure) {
+      void configureFloatingLyrics({ language: i18n.locale })
+    }
   } catch {}
   bridge.floatingLyrics.onStateChanged((snapshot) => {
     state.floatingLyrics = { ...state.floatingLyrics, ...(snapshot?.config || {}) }

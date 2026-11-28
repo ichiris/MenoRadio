@@ -8,6 +8,34 @@ require('../src/core/lyrics-parser.js')
 
 const core = global.window.MenoRadioCore
 
+test('language persists across startup and localized placeholders preserve song text', () => {
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const vm = require('node:vm')
+  const storage = new Map()
+  const start = () => {
+    const context = vm.createContext({ window: { localStorage: {
+      getItem: (key) => storage.get(key),
+      setItem: (key, value) => storage.set(key, value),
+    } } })
+    for (const file of ['core/i18n.js', 'locales/zh-TW.js', 'locales/en.js', 'locales/ja.js']) {
+      vm.runInContext(fs.readFileSync(path.join(__dirname, '../src', file), 'utf8'), context)
+    }
+    return context.window.MenoRadioI18n
+  }
+  const i18n = start()
+  assert.equal(i18n.locale, 'zh-CN')
+  i18n.setLanguage('en', { persist: true })
+  assert.equal(start().t('播放器样式'), 'Player style')
+  assert.equal(i18n.t('已复制歌曲信息 “{info}”', { info: '播放 - 歌手' }), 'Copied song info: “播放 - 歌手”')
+  i18n.setLanguage('ja')
+  assert.equal(i18n.t('播放器样式'), 'プレーヤーのスタイル')
+  i18n.setLanguage('zh-TW')
+  assert.equal(i18n.t('播放器样式'), '播放器樣式')
+  i18n.setLanguage('invalid')
+  assert.equal(i18n.t('播放器样式'), '播放器样式')
+})
+
 test('formatters retain renderer-facing output', () => {
   assert.equal(core.formatTime(61.9), '1:01')
   assert.equal(core.formatDuration(125000), '2:05')

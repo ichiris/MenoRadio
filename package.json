@@ -18,7 +18,7 @@
     "screenshot:player:radio": "electron . --size=1600x1000 --preview=player-radio --screenshot=menoradio-player-radio-v1.png",
     "screenshot:user": "electron . --size=1440x900 --preview=user --screenshot=menoradio-user-v1.png",
     "test": "node --test tests/*.test.cjs",
-    "check": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/floating-preload.cjs && node --check src/core/utils.js && node --check src/core/playback-queue.js && node --check src/core/lyrics-parser.js && node --check src/app.js && node --check src/floating-lyrics.js",
+    "check": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/floating-preload.cjs && node --check src/core/i18n.js && node --check src/locales/zh-TW.js && node --check src/locales/en.js && node --check src/locales/ja.js && node --check src/core/utils.js && node --check src/core/playback-queue.js && node --check src/core/lyrics-parser.js && node --check src/app.js && node --check src/floating-lyrics.js",
     "validate": "npm run check && npm test",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win nsis portable"

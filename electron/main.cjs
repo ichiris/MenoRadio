@@ -869,6 +869,7 @@ const isDev = process.argv.includes('--dev')
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 
 const floatingLyricsDefaults = {
+  language: 'zh-CN',
   mode: 'off',
   locked: true,
   hideWhenPaused: true,
@@ -911,6 +912,7 @@ function floatingLyricsPath() {
 
 function sanitizeFloatingLyricsConfig(input = {}) {
   const config = { ...floatingLyricsDefaults, ...(input || {}) }
+  if (!['zh-CN', 'zh-TW', 'en', 'ja'].includes(config.language)) config.language = 'zh-CN'
   if (!['off', 'minimized', 'outside-player', 'always'].includes(config.mode)) config.mode = 'off'
   if (!['left', 'center', 'right'].includes(config.align)) config.align = 'right'
   if (!['top', 'center', 'bottom'].includes(config.noTranslationPosition)) config.noTranslationPosition = 'bottom'
@@ -1720,8 +1722,8 @@ function registerWindowIpc() {
     saveFloatingLyricsState()
   })
   ipcMain.handle('floating-lyrics:reset', () => {
-    const mode = floatingLyricsState.config.mode
-    floatingLyricsState.config = { ...floatingLyricsDefaults, mode }
+    const { mode, language } = floatingLyricsState.config
+    floatingLyricsState.config = { ...floatingLyricsDefaults, mode, language }
     floatingLyricsState.bounds = defaultFloatingLyricsBounds()
     if (floatingLyricsWindow && !floatingLyricsWindow.isDestroyed()) {
       floatingLyricsWindow.setBounds(floatingLyricsState.bounds, true)

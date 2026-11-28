@@ -93,6 +93,10 @@
 
   function formatCount(value) {
     const count = Number(value || 0)
+    const locale = window.MenoRadioI18n?.locale
+    if (locale && locale !== 'zh-CN') {
+      return new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 1 }).format(count)
+    }
     if (count >= 100000000) return `${(count / 100000000).toFixed(1)} 亿`
     if (count >= 10000) return `${(count / 10000).toFixed(count >= 100000 ? 0 : 1)} 万`
     return String(count)
@@ -154,9 +158,10 @@
   }
 
   function fontLabel(value) {
-    if (value === 'system') return defaultFontLabel
+    const fallback = window.MenoRadioI18n?.t(defaultFontLabel) ?? defaultFontLabel
+    if (value === 'system') return fallback
     if (legacyFontNames[String(value || '').toLowerCase()]) return legacyFontNames[String(value).toLowerCase()]
-    return String(value || defaultFontLabel)
+    return String(value || fallback)
   }
 
   function sizedImageUrl(value, size = 96) {

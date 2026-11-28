@@ -1,4 +1,6 @@
 const bridge = window.floatingLyrics
+const i18n = window.MenoRadioI18n
+i18n.initializeDocument()
 const { fontCss, ensureLocalFont } = window.MenoRadioCore
 const surface = document.querySelector('#surface')
 const primary = document.querySelector('#primary')
@@ -66,7 +68,9 @@ function scheduleSurfaceHide() {
 
 function applyConfig(next = {}) {
   const previousFontFamily = config.fontFamily
+  const previousLanguage = config.language
   config = { ...config, ...next }
+  if (config.language !== previousLanguage) i18n.setLanguage(config.language)
   const fontFamily = config.fontFamily
   if (fontFamily !== previousFontFamily) {
     void ensureLocalFont(fontFamily).then((loaded) => {
